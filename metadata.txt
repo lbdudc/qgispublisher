@@ -1,0 +1,7 @@
+[general]
+name=QGisPublisher
+description=Plugin para ejecutar GisPublisher desde QGIS.
+version=0.1
+qgisMinimumVersion=3.0
+author=Autor
+email=email@example.com

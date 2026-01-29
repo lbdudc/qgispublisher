@@ -1,0 +1,560 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>Dialog</class>
+ <widget class="QDialog" name="Dialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>400</width>
+    <height>300</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Dialog</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="QGroupBox" name="groupBox">
+     <property name="title">
+      <string>Tipo de despliegue</string>
+     </property>
+     <widget class="QRadioButton" name="radioLocal">
+      <property name="geometry">
+       <rect>
+        <x>20</x>
+        <y>20</y>
+        <width>69</width>
+        <height>15</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Local</string>
+      </property>
+      <property name="checked">
+       <bool>true</bool>
+      </property>
+     </widget>
+     <widget class="QRadioButton" name="radioSSH">
+      <property name="geometry">
+       <rect>
+        <x>140</x>
+        <y>20</y>
+        <width>69</width>
+        <height>15</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>SSH</string>
+      </property>
+     </widget>
+     <widget class="QRadioButton" name="radioAWS">
+      <property name="geometry">
+       <rect>
+        <x>250</x>
+        <y>20</y>
+        <width>69</width>
+        <height>15</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>AWS</string>
+      </property>
+     </widget>
+     <widget class="QStackedWidget" name="deployWidget">
+      <property name="geometry">
+       <rect>
+        <x>10</x>
+        <y>50</y>
+        <width>351</width>
+        <height>201</height>
+       </rect>
+      </property>
+      <property name="currentIndex">
+       <number>0</number>
+      </property>
+      <widget class="QWidget" name="pageLocal">
+       <widget class="QLabel" name="label">
+        <property name="geometry">
+         <rect>
+          <x>10</x>
+          <y>10</y>
+          <width>81</width>
+          <height>16</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>Despliegue Local</string>
+        </property>
+       </widget>
+       <widget class="QLineEdit" name="lineEdit">
+        <property name="geometry">
+         <rect>
+          <x>10</x>
+          <y>60</y>
+          <width>113</width>
+          <height>20</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>http://localhost:80</string>
+        </property>
+       </widget>
+       <widget class="QLabel" name="label_16">
+        <property name="geometry">
+         <rect>
+          <x>10</x>
+          <y>40</y>
+          <width>39</width>
+          <height>11</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>Host</string>
+        </property>
+       </widget>
+      </widget>
+      <widget class="QWidget" name="pageSSH">
+       <widget class="QLabel" name="label_2">
+        <property name="geometry">
+         <rect>
+          <x>10</x>
+          <y>10</y>
+          <width>71</width>
+          <height>16</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>Despliegue SSH</string>
+        </property>
+       </widget>
+       <widget class="QLineEdit" name="sshHostEdit">
+        <property name="geometry">
+         <rect>
+          <x>11</x>
+          <y>60</y>
+          <width>131</width>
+          <height>19</height>
+         </rect>
+        </property>
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Maximum" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>150</width>
+          <height>16777215</height>
+         </size>
+        </property>
+       </widget>
+       <widget class="QLineEdit" name="sshPathEdit">
+        <property name="geometry">
+         <rect>
+          <x>11</x>
+          <y>102</y>
+          <width>131</width>
+          <height>19</height>
+         </rect>
+        </property>
+       </widget>
+       <widget class="QLabel" name="label_3">
+        <property name="geometry">
+         <rect>
+          <x>11</x>
+          <y>43</y>
+          <width>39</width>
+          <height>16</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>Host</string>
+        </property>
+       </widget>
+       <widget class="QLabel" name="label_4">
+        <property name="geometry">
+         <rect>
+          <x>11</x>
+          <y>85</y>
+          <width>61</width>
+          <height>16</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>Ruta remota</string>
+        </property>
+       </widget>
+       <widget class="QLabel" name="label_5">
+        <property name="geometry">
+         <rect>
+          <x>170</x>
+          <y>43</y>
+          <width>39</width>
+          <height>16</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>Usuario</string>
+        </property>
+       </widget>
+       <widget class="QLineEdit" name="sshUserEdit">
+        <property name="geometry">
+         <rect>
+          <x>170</x>
+          <y>60</y>
+          <width>131</width>
+          <height>19</height>
+         </rect>
+        </property>
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Maximum" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>150</width>
+          <height>16777215</height>
+         </size>
+        </property>
+       </widget>
+       <widget class="QSpinBox" name="sshPortEdit">
+        <property name="enabled">
+         <bool>true</bool>
+        </property>
+        <property name="geometry">
+         <rect>
+          <x>170</x>
+          <y>102</y>
+          <width>81</width>
+          <height>19</height>
+         </rect>
+        </property>
+        <property name="wrapping">
+         <bool>false</bool>
+        </property>
+        <property name="minimum">
+         <number>1</number>
+        </property>
+        <property name="maximum">
+         <number>65535</number>
+        </property>
+        <property name="value">
+         <number>22</number>
+        </property>
+       </widget>
+       <widget class="QLabel" name="label_6">
+        <property name="geometry">
+         <rect>
+          <x>170</x>
+          <y>85</y>
+          <width>39</width>
+          <height>16</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>Puerto</string>
+        </property>
+       </widget>
+      </widget>
+      <widget class="QWidget" name="pageAWS">
+       <widget class="QLabel" name="label_7">
+        <property name="geometry">
+         <rect>
+          <x>10</x>
+          <y>33</y>
+          <width>91</width>
+          <height>16</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>AWS Access Key ID</string>
+        </property>
+       </widget>
+       <widget class="QLabel" name="label_8">
+        <property name="geometry">
+         <rect>
+          <x>10</x>
+          <y>73</y>
+          <width>101</width>
+          <height>16</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>AWS Secret Access Key</string>
+        </property>
+       </widget>
+       <widget class="QLabel" name="label_9">
+        <property name="geometry">
+         <rect>
+          <x>10</x>
+          <y>10</y>
+          <width>231</width>
+          <height>16</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>Despliegue AWS - CAMPOS INCORRECTOS REVISAR</string>
+        </property>
+       </widget>
+       <widget class="QLineEdit" name="sshPathEdit_2">
+        <property name="geometry">
+         <rect>
+          <x>10</x>
+          <y>90</y>
+          <width>131</width>
+          <height>19</height>
+         </rect>
+        </property>
+       </widget>
+       <widget class="QLineEdit" name="sshHostEdit_2">
+        <property name="geometry">
+         <rect>
+          <x>10</x>
+          <y>50</y>
+          <width>131</width>
+          <height>19</height>
+         </rect>
+        </property>
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Maximum" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>150</width>
+          <height>16777215</height>
+         </size>
+        </property>
+       </widget>
+       <widget class="QLabel" name="label_10">
+        <property name="geometry">
+         <rect>
+          <x>10</x>
+          <y>153</y>
+          <width>101</width>
+          <height>16</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>Nombre de la Key Pair</string>
+        </property>
+       </widget>
+       <widget class="QLineEdit" name="sshPathEdit_3">
+        <property name="geometry">
+         <rect>
+          <x>10</x>
+          <y>170</y>
+          <width>131</width>
+          <height>19</height>
+         </rect>
+        </property>
+       </widget>
+       <widget class="QLabel" name="label_11">
+        <property name="geometry">
+         <rect>
+          <x>10</x>
+          <y>113</y>
+          <width>91</width>
+          <height>16</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>AWS Region</string>
+        </property>
+       </widget>
+       <widget class="QLineEdit" name="sshHostEdit_3">
+        <property name="geometry">
+         <rect>
+          <x>10</x>
+          <y>130</y>
+          <width>131</width>
+          <height>19</height>
+         </rect>
+        </property>
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Maximum" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>150</width>
+          <height>16777215</height>
+         </size>
+        </property>
+       </widget>
+       <widget class="QLabel" name="label_12">
+        <property name="geometry">
+         <rect>
+          <x>170</x>
+          <y>73</y>
+          <width>101</width>
+          <height>16</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>Tipo de instancia</string>
+        </property>
+       </widget>
+       <widget class="QLineEdit" name="sshPathEdit_4">
+        <property name="geometry">
+         <rect>
+          <x>170</x>
+          <y>90</y>
+          <width>131</width>
+          <height>19</height>
+         </rect>
+        </property>
+       </widget>
+       <widget class="QLabel" name="label_13">
+        <property name="geometry">
+         <rect>
+          <x>170</x>
+          <y>33</y>
+          <width>91</width>
+          <height>16</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>AMI ID</string>
+        </property>
+       </widget>
+       <widget class="QLineEdit" name="sshHostEdit_4">
+        <property name="geometry">
+         <rect>
+          <x>170</x>
+          <y>50</y>
+          <width>131</width>
+          <height>19</height>
+         </rect>
+        </property>
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Maximum" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>150</width>
+          <height>16777215</height>
+         </size>
+        </property>
+       </widget>
+       <widget class="QLabel" name="label_14">
+        <property name="geometry">
+         <rect>
+          <x>170</x>
+          <y>153</y>
+          <width>101</width>
+          <height>16</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>ID grupo seguridad</string>
+        </property>
+       </widget>
+       <widget class="QLineEdit" name="sshPathEdit_5">
+        <property name="geometry">
+         <rect>
+          <x>170</x>
+          <y>170</y>
+          <width>131</width>
+          <height>19</height>
+         </rect>
+        </property>
+       </widget>
+       <widget class="QLabel" name="label_15">
+        <property name="geometry">
+         <rect>
+          <x>170</x>
+          <y>113</y>
+          <width>91</width>
+          <height>16</height>
+         </rect>
+        </property>
+        <property name="text">
+         <string>Nombre instancia</string>
+        </property>
+       </widget>
+       <widget class="QLineEdit" name="sshHostEdit_5">
+        <property name="geometry">
+         <rect>
+          <x>170</x>
+          <y>130</y>
+          <width>131</width>
+          <height>19</height>
+         </rect>
+        </property>
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Maximum" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>150</width>
+          <height>16777215</height>
+         </size>
+        </property>
+       </widget>
+      </widget>
+     </widget>
+    </widget>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="deployButton">
+     <property name="orientation">
+      <enum>Qt::Horizontal</enum>
+     </property>
+     <property name="standardButtons">
+      <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections>
+  <connection>
+   <sender>deployButton</sender>
+   <signal>accepted()</signal>
+   <receiver>Dialog</receiver>
+   <slot>accept()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>248</x>
+     <y>254</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>157</x>
+     <y>274</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>deployButton</sender>
+   <signal>rejected()</signal>
+   <receiver>Dialog</receiver>
+   <slot>reject()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>316</x>
+     <y>260</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>286</x>
+     <y>274</y>
+    </hint>
+   </hints>
+  </connection>
+ </connections>
+</ui>
