@@ -67,9 +67,14 @@ class GenerateDialog(QDialog, FORM_CLASS):
                 output_dir=self.output_dir,
                 progress_label=progress_dialog.statusLabel,
                 progress_bar=progress_dialog.progressBar,
+                output_text=progress_dialog.outputText,
                 parent=self,
-                finished_callback=lambda: progress_dialog.closeButton.setEnabled(True)
+                finished_callback=lambda: (
+                    progress_dialog.closeButton.setEnabled(True),
+                    self.generateButton.setEnabled(True),
+                    self.cancelButton.setEnabled(True)
+                )
             )
-            self.runner.start()
+            self.runner.start(generate=True)
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))

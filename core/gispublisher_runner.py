@@ -4,11 +4,12 @@ from ..core.dependencies_checker import check_node_gispublisher
 
 class GISPublisherRunner:
 
-    def __init__(self, layers, output_dir, progress_label, progress_bar, parent=None, finished_callback=None):
+    def __init__(self, layers, output_dir, progress_label, progress_bar, output_text, parent=None, finished_callback=None):
         self.layers = layers
         self.output_dir = output_dir
         self.progress_label = progress_label
         self.progress_bar = progress_bar
+        self.output_text = output_text
         self.parent = parent
         self.finished_callback = finished_callback
         self.temp_dir = tempfile.mkdtemp(prefix="qgis_gispublisher_")
@@ -18,23 +19,27 @@ class GISPublisherRunner:
         self.timer = None
         self.fake_progress = 0
 
-    def start(self):
+    def start(self, generate=False):
         gispub_path = check_node_gispublisher()
-        self.run_gispublisher(gispub_path)
+        args = [self.temp_dir]
+        if generate:
+            args.append("-g")
+        self.run_gispublisher(gispub_path, args)
 
-    def run_gispublisher(self, gispub_path):
-        if self.parent:
-            self.parent.generateButton.setVisible(False)
-            self.parent.cancelButton.setVisible(False)
-
+    def run_gispublisher(self, gispub_path, args):
         self.progress_label.setText("Running GISPublisher...")
         self.progress_label.setVisible(True)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
 
+        self.output_text.clear()
+        self.output_text.appendPlainText("> Starting GISPublisher...\n")
+
+        os.environ["PATH"] += os.pathsep + r"C:\Program Files\Docker\Docker\resources\bin"
+
         self.process = QProcess()
         self.process.setProgram(gispub_path)
-        self.process.setArguments(["-g", self.temp_dir])
+        self.process.setArguments(args)
         self.process.setWorkingDirectory(self.output_dir)
 
         self.process.readyReadStandardOutput.connect(self.handle_stdout)
@@ -43,7 +48,7 @@ class GISPublisherRunner:
 
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_fake_progress)
-        self.timer.start(2000)
+        self.timer.start(1000)
 
         self.process.start()
 
@@ -55,20 +60,23 @@ class GISPublisherRunner:
             self.timer.stop()
 
     def handle_stdout(self):
-        text = self.process.readAllStandardOutput().data().decode()
-        self.progress_label.setText(self.progress_label.text() + "\n" + text)
+        text = bytes(self.process.readAllStandardOutput()).decode()
+        if text.strip():
+            self.output_text.appendPlainText(text.rstrip())
         self.progress_bar.setValue(min(self.progress_bar.value() + 1, 100))
 
     def handle_stderr(self):
-        text = self.process.readAllStandardError().data().decode()
-        self.progress_label.setText(self.progress_label.text() + "\n" + text)
+        text = bytes(self.process.readAllStandardError()).decode()
+        if text.strip():
+            self.output_text.appendPlainText(f"[ERROR] {text.rstrip()}")
 
     def finished(self):
-        self.timer.stop()
+        if self.timer:
+            self.timer.stop()
+
         self.progress_bar.setValue(100)
         self.progress_label.setText("GISPublisher finished ✅")
-        if self.parent:
-            self.parent.generateButton.setVisible(True)
-            self.parent.cancelButton.setVisible(True)
+        self.output_text.appendPlainText("\n> Process finished.")
+
         if self.finished_callback:
             self.finished_callback()
