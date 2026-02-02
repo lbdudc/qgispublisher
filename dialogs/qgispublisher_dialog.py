@@ -38,23 +38,22 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self.deployButton.setEnabled(has_layers)
         self.infoLabel.setVisible(not has_layers)
 
+    def check_requirements_and_open(self, create_dialog_callback):
+        """Check requirements and open the dialog using the provided callback if all are satisfied."""
+        req_dialog = RequirementsDialog(parent=self)
+
+        if req_dialog.nodeIconLabel.text() == "✔" and req_dialog.gispubIconLabel.text() == "✔":
+            dlg = create_dialog_callback()
+            dlg.exec_()
+        else:
+            req_dialog.exec_()
+
     def open_generate_dialog(self):
         layers = [layer for layer in QgsProject.instance().mapLayers().values()
                 if layer.type() == QgsMapLayer.VectorLayer]
         if not layers:
             return
-
-        req_dialog = RequirementsDialog(parent=self)
-        
-        # If both Node.js and GISPublisher are installed, continue normally
-        if (req_dialog.nodeIconLabel.text() == "✔" and
-            req_dialog.gispubIconLabel.text() == "✔"):
-            dlg = GenerateDialog(layers, parent=self)
-            dlg.exec_()
-        else:
-            # Show requirements dialog if something is missing
-            req_dialog.exec_()
+        self.check_requirements_and_open(lambda: GenerateDialog(layers, parent=self))
 
     def open_deploy_dialog(self):
-        dlg = DeployDialog(parent=self)
-        dlg.exec_()
+        self.check_requirements_and_open(lambda: DeployDialog(parent=self))
