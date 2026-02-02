@@ -7,13 +7,28 @@ def check_node_gispublisher():
     return gispub_path
 
 def find_node_windows():
-    possible_paths = [r"C:\Program Files\nodejs\node.exe",
-                      r"C:\Program Files (x86)\nodejs\node.exe"]
+    possible_paths = [
+        r"C:\Program Files\nodejs\node.exe",
+        r"C:\Program Files (x86)\nodejs\node.exe"
+    ]
+
     for path in possible_paths:
         if os.path.exists(path):
             os.environ["PATH"] += os.pathsep + os.path.dirname(path)
-            return path
-    raise Exception("No se encontró Node.js. Instálalo desde https://nodejs.org/ y reinicia QGIS.")
+            return {
+                "installed": True,
+                "path": path
+            }
+
+    return {
+        "installed": False,
+        "message": (
+        "Node.js no está instalado.<br>"
+        "<a href='https://nodejs.org/en/download'>"
+        "Instálalo aquí"
+        "</a>"
+        )
+    }
 
 def get_npm_prefix():
     npm_path = find_npm_windows()

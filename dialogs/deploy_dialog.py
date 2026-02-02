@@ -77,7 +77,7 @@ class DeployGenerateDialog(QDialog, DEPLOY_GENERATE_FORM_CLASS):
                 output_text=progress_dialog.outputText,
                 parent=self,
                 finished_callback=lambda: (
-                    progress_dialog.closeButton.setEnabled(True)
+                    progress_dialog.closeButton.setEnabled(True),
                     self.deployButton.setEnabled(True),
                     self.cancelButton.setEnabled(True)
                 )
