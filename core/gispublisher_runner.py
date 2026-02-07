@@ -1,4 +1,4 @@
-import os, tempfile
+import os, tempfile, pathlib, shutil
 from PyQt5.QtCore import QProcess, QTimer
 from ..core.dependencies_checker import check_node_gispublisher
 
@@ -13,20 +13,43 @@ class GISPublisherRunner:
         self.parent = parent
         self.finished_callback = finished_callback
         self.temp_dir = tempfile.mkdtemp(prefix="qgis_gispublisher_")
-        os.makedirs(os.path.join(self.temp_dir, "layers"), exist_ok=True)
         os.makedirs(os.path.join(self.temp_dir, "charts"), exist_ok=True)
         self.process = None
         self.timer = None
         self.fake_progress = 0
 
-    def start(self, generate=False):
-        gispub_path = check_node_gispublisher()
-        args = [self.temp_dir]
-        if generate:
-            args.append("-g")
-        self.run_gispublisher(gispub_path, args)
+    def copy_layers_directly(self):
+        for layer in self.layers:
+            source = pathlib.Path(layer.source()).resolve()
+            base = source.with_suffix("")
 
-    def run_gispublisher(self, gispub_path, args):
+            for ext in [".shp", ".dbf", ".shx", ".prj", ".cpg"]:
+                file = base.with_suffix(ext)
+                if file.exists():
+                    shutil.copy(file, self.temp_dir)
+
+    def start(self, generate=False, config_path=None):
+        gispub_path = check_node_gispublisher()
+        args = []
+
+        self.copy_layers_directly()
+
+        if generate:
+            shapefiles_folder = self.temp_dir
+            args.append(shapefiles_folder)
+            args.append("-g")
+            working_dir = self.output_dir
+        elif config_path:  # deploy
+            shapefiles_folder = self.temp_dir
+            config_path = pathlib.Path(config_path)
+
+            args.append(shapefiles_folder)
+            args.append("--config")
+            args.append(config_path.name)          
+            working_dir = str(config_path.parent)
+        self.run_gispublisher(gispub_path, args, working_dir)
+
+    def run_gispublisher(self, gispub_path, args, working_dir=None):
         self.progress_label.setText("Running GISPublisher...")
         self.progress_label.setVisible(True)
         self.progress_bar.setVisible(True)
@@ -35,12 +58,12 @@ class GISPublisherRunner:
         self.output_text.clear()
         self.output_text.appendPlainText("> Starting GISPublisher...\n")
 
-        os.environ["PATH"] += os.pathsep + r"C:\Program Files\Docker\Docker\resources\bin"
-
         self.process = QProcess()
         self.process.setProgram(gispub_path)
         self.process.setArguments(args)
-        self.process.setWorkingDirectory(self.output_dir)
+
+        if working_dir:
+            self.process.setWorkingDirectory(working_dir)
 
         self.process.readyReadStandardOutput.connect(self.handle_stdout)
         self.process.readyReadStandardError.connect(self.handle_stderr)
