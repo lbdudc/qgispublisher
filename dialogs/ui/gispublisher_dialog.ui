@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>400</width>
-    <height>300</height>
+    <width>404</width>
+    <height>309</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -37,6 +37,13 @@
       </property>
       <property name="selectionMode">
        <enum>QAbstractItemView::NoSelection</enum>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QPushButton" name="selectAllButton">
+      <property name="text">
+       <string>Seleccionar todo</string>
       </property>
      </widget>
     </item>
