@@ -24,6 +24,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self.deployButton.clicked.connect(self.open_deploy_dialog)
         self.cancelButton.clicked.connect(self.close)
         self.selectAllButton.clicked.connect(self.select_all_layers)
+        self.layersList.itemChanged.connect(self.update_selection_state)
 
         QgsProject.instance().layersAdded.connect(self.load_layers)
         QgsProject.instance().layersRemoved.connect(self.load_layers)
@@ -45,10 +46,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
 
             self.layersList.addItem(item)
 
-        has_layers = self.layersList.count() > 0
-        self.generateButton.setEnabled(has_layers)
-        self.deployButton.setEnabled(has_layers)
-        self.infoLabel.setVisible(not has_layers)
+        self.update_selection_state()
 
     def check_requirements_and_open(self, create_dialog_callback):
         """Check requirements and open the dialog using the provided callback if all are satisfied."""
@@ -75,6 +73,20 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
 
         for i in range(count):
             self.layersList.item(i).setCheckState(new_state)
+
+        self.update_selection_state()
+
+    def update_selection_state(self):
+        has_selected = False
+
+        for i in range(self.layersList.count()):
+            if self.layersList.item(i).checkState() == Qt.Checked:
+                has_selected = True
+                break
+
+        self.generateButton.setEnabled(has_selected)
+        self.deployButton.setEnabled(has_selected)
+        self.infoLabel.setVisible(not has_selected)
 
     def open_generate_dialog(self):
         project = QgsProject.instance()
