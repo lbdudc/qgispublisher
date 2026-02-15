@@ -22,6 +22,8 @@ class GenerateProgressDialog(QDialog, PROGRESS_FORM_CLASS):
 
 class GenerateDialog(QDialog, FORM_CLASS):
     """Dialog to select layers and output folder for generation."""
+
+    DEBUG = True
     
     def __init__(self, layers, parent=None):
         super().__init__(parent)
@@ -58,6 +60,7 @@ class GenerateDialog(QDialog, FORM_CLASS):
         try:
             progress_dialog = GenerateProgressDialog(self)
             progress_dialog.closeButton.clicked.connect(progress_dialog.close)
+            progress_dialog.outputText.setVisible(self.DEBUG)
             progress_dialog.show()  
 
             self.close()          
@@ -68,10 +71,11 @@ class GenerateDialog(QDialog, FORM_CLASS):
                 chart_folder=getattr(self.parent(), "selected_chart_folder", None),
                 progress_label=progress_dialog.statusLabel,
                 progress_bar=progress_dialog.progressBar,
-                output_text=progress_dialog.outputText,
+                output_text=progress_dialog.outputText if self.DEBUG else None,
                 parent=self,
+                debug=self.DEBUG,
                 finished_callback=lambda: (
-                    progress_dialog.close(),
+                    progress_dialog.close() if not self.DEBUG else None,
                     self.close()
                 )
             )

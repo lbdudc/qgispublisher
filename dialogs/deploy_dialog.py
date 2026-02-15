@@ -14,14 +14,17 @@ DEPLOY_PROGRESS_FORM_CLASS, _ = uic.loadUiType(
 
 
 class DeployProgressDialog(QDialog, DEPLOY_PROGRESS_FORM_CLASS):
-    """Dialog that shows the progress of the deployment."""
+    """Dialog that shows the progress of the deployment."""    
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setupUi(self)
         self.closeButton.setEnabled(False)
 
 class DeployDialog(QDialog, DEPLOY_FORM_CLASS):
-    """Main deployment dialog: choose Local/SSH/AWS."""
+    """Main deployment dialog: choose Local/SSH/AWS.""" 
+
+    DEBUG = True
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setupUi(self)
@@ -131,6 +134,7 @@ class DeployDialog(QDialog, DEPLOY_FORM_CLASS):
             progress_dialog = DeployProgressDialog(parent=None)
             progress_dialog.setModal(True)
             progress_dialog.closeButton.clicked.connect(progress_dialog.close)
+            progress_dialog.outputText.setVisible(self.DEBUG)
             progress_dialog.show()
 
             config_path = self.generate_deploy_config()
@@ -144,10 +148,11 @@ class DeployDialog(QDialog, DEPLOY_FORM_CLASS):
                 chart_folder=getattr(self.parent(), "selected_chart_folder", None),
                 progress_label=progress_dialog.statusLabel,
                 progress_bar=progress_dialog.progressBar,
-                output_text=progress_dialog.outputText,
+                output_text=progress_dialog.outputText if self.DEBUG else None,
                 parent=self,
+                debug=self.DEBUG,
                 finished_callback=lambda: (
-                    progress_dialog.close(),  
+                    progress_dialog.close() if not self.DEBUG else None,  
                     self.close(),      
                     os.remove(config_path)
                 )

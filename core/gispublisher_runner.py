@@ -7,7 +7,7 @@ from ..core.dependencies_checker import check_node_gispublisher
 
 class GISPublisherRunner:
 
-    def __init__(self, layers, output_dir, progress_label, progress_bar, output_text, parent=None, finished_callback=None, chart_folder=None):
+    def __init__(self, layers, output_dir, progress_label, progress_bar, output_text, parent=None, finished_callback=None, chart_folder=None, debug=False):
         self.layers = layers
         self.output_dir = output_dir
         self.progress_label = progress_label
@@ -22,6 +22,7 @@ class GISPublisherRunner:
         self.process = None
         self.timer = None
         self.fake_progress = 0
+        self.debug = debug
 
     def copy_layers_directly(self):
         for layer in self.layers:
@@ -72,8 +73,9 @@ class GISPublisherRunner:
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
 
-        self.output_text.clear()
-        self.output_text.appendPlainText("> Iniciando GISPublisher...\n")
+        if self.output_text:
+            self.output_text.clear()
+            self.output_text.appendPlainText("> Iniciando GISPublisher...\n")
 
         self.process = QProcess()
         self.process.setProgram(gispub_path)
@@ -100,17 +102,25 @@ class GISPublisherRunner:
             self.timer.stop()
 
     def handle_stdout(self):
-        text = bytes(self.process.readAllStandardOutput()).decode()
-        if text.strip():
-            self.output_text.appendPlainText(text.rstrip())
-        self.progress_bar.setValue(min(self.progress_bar.value() + 1, 90))
+        if self.output_text:
+            text = bytes(self.process.readAllStandardOutput()).decode()
+            if text.strip():
+                self.output_text.appendPlainText(text.rstrip())
+        if self.progress_bar:
+            self.progress_bar.setValue(min(self.progress_bar.value() + 1, 90))
 
     def handle_stderr(self):
-        text = bytes(self.process.readAllStandardError()).decode()
-        if text.strip():
-            self.output_text.appendPlainText(f"[ERROR] {text.rstrip()}")
+        if self.output_text:
+            text = bytes(self.process.readAllStandardError()).decode()
+            if text.strip():
+                self.output_text.appendPlainText(f"[ERROR] {text.rstrip()}")
     
     def show_error_popup(self, message=None):
+        if self.debug:
+            self.progress_label.setText("GISPublisher finalizó con errores ❌")
+            self.output_text.appendPlainText(f"\n> ERROR: {message or 'Fallo durante la ejecución'}")
+            return
+        
         msg_box = QMessageBox(self.parent)
         msg_box.setIcon(QMessageBox.Critical)
         msg_box.setWindowTitle("Error en GISPublisher")
@@ -120,6 +130,11 @@ class GISPublisherRunner:
         msg_box.exec_()
 
     def show_success_popup(self):
+        if self.debug:
+            self.progress_label.setText("GISPublisher finalizado ✅")
+            self.output_text.appendPlainText("\n> Proceso finalizado correctamente.")
+            return
+        
         msg_box = QMessageBox(self.parent)
         msg_box.setIcon(QMessageBox.Information)
         msg_box.setWindowTitle("Proceso completado")
