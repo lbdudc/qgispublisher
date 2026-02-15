@@ -1,5 +1,6 @@
 import os, tempfile, pathlib, shutil
 from PyQt5.QtCore import QProcess, QTimer
+from PyQt5.QtWidgets import QMessageBox
 from ..core.dependencies_checker import check_node_gispublisher
 
 class GISPublisherRunner:
@@ -99,20 +100,35 @@ class GISPublisherRunner:
         text = bytes(self.process.readAllStandardOutput()).decode()
         if text.strip():
             self.output_text.appendPlainText(text.rstrip())
-        self.progress_bar.setValue(min(self.progress_bar.value() + 1, 100))
+        self.progress_bar.setValue(min(self.progress_bar.value() + 1, 90))
 
     def handle_stderr(self):
         text = bytes(self.process.readAllStandardError()).decode()
         if text.strip():
             self.output_text.appendPlainText(f"[ERROR] {text.rstrip()}")
+    
+    def show_error_popup(self, message=None):
+        msg_box = QMessageBox(self.parent)
+        msg_box.setIcon(QMessageBox.Critical)
+        msg_box.setWindowTitle("Error en GISPublisher")
+        msg_box.setText("Ha ocurrido un error durante la ejecución de GISPublisher.")
+        if message:
+            msg_box.setInformativeText(message)
+        msg_box.exec_()
 
-    def finished(self):
+    def finished(self, exitCode, exitStatus):
         if self.timer:
             self.timer.stop()
 
-        self.progress_bar.setValue(100)
-        self.progress_label.setText("GISPublisher finalizado ✅")
-        self.output_text.appendPlainText("\n> Proceso finalizado.")
+        if exitCode == 0:
+            self.progress_bar.setValue(100)
+            self.progress_bar.setStyleSheet("")
+            self.progress_label.setText("GISPublisher finalizado ✅")
+            self.output_text.appendPlainText("\n> Proceso finalizado correctamente.")
+        else:
+            self.progress_label.setText("GISPublisher falló ❌")
+            self.output_text.appendPlainText(f"\n> Proceso finalizado con errores (código de salida {exitCode}).")
+            self.show_error_popup()
 
         if self.finished_callback:
             self.finished_callback()
