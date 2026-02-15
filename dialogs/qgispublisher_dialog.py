@@ -1,12 +1,11 @@
 import os
 from qgis.PyQt import uic
 from qgis.PyQt.QtCore import Qt
-from qgis.PyQt.QtWidgets import QDialog, QListWidgetItem
+from qgis.PyQt.QtWidgets import QDialog, QListWidgetItem, QFileDialog
 from qgis.core import QgsProject, QgsMapLayer
 from .generate_dialog import GenerateDialog
 from .deploy_dialog import DeployDialog
 from .requirements_dialog import RequirementsDialog
-from ..core.dependencies_checker import check_node_gispublisher
 
 FORM_CLASS, _ = uic.loadUiType(
     os.path.join(os.path.dirname(__file__), "ui", "gispublisher_dialog.ui")
@@ -20,11 +19,15 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self.setupUi(self)
         self.infoLabel.setVisible(False)
 
+        self.selected_chart_folder = None
+        self.chartFolderLabel.setText("No se ha seleccionado carpeta de gráficos")
+
         self.generateButton.clicked.connect(self.open_generate_dialog)
         self.deployButton.clicked.connect(self.open_deploy_dialog)
         self.cancelButton.clicked.connect(self.close)
         self.selectAllButton.clicked.connect(self.select_all_layers)
         self.layersList.itemChanged.connect(self.update_selection_state)
+        self.selectChartFolderButton.clicked.connect(self.select_chart_folder)
 
         QgsProject.instance().layersAdded.connect(self.load_layers)
         QgsProject.instance().layersRemoved.connect(self.load_layers)
@@ -87,6 +90,21 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self.generateButton.setEnabled(has_selected)
         self.deployButton.setEnabled(has_selected)
         self.infoLabel.setVisible(not has_selected)
+    
+    def select_chart_folder(self):
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Seleccionar carpeta de gráficos",
+            ""
+        )
+
+        if folder:
+            self.selected_chart_folder = folder
+            self.chartFolderLabel.setWordWrap(True)
+            self.chartFolderLabel.setText(f"Carpeta seleccionada: {folder}")
+        else:
+            self.selected_chart_folder = None
+            self.chartFolderLabel.setText("No se ha seleccionado carpeta de gráficos")
 
     def open_generate_dialog(self):
         project = QgsProject.instance()

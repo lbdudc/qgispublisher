@@ -65,6 +65,7 @@ class GenerateDialog(QDialog, FORM_CLASS):
             self.runner = GISPublisherRunner(
                 layers=self.layers,
                 output_dir=self.output_dir,
+                chart_folder=getattr(self.parent(), "selected_chart_folder", None),
                 progress_label=progress_dialog.statusLabel,
                 progress_bar=progress_dialog.progressBar,
                 output_text=progress_dialog.outputText,

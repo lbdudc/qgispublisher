@@ -141,6 +141,7 @@ class DeployDialog(QDialog, DEPLOY_FORM_CLASS):
             self.runner = GISPublisherRunner(
                 layers=layers,
                 output_dir=None, 
+                chart_folder=getattr(self.parent(), "selected_chart_folder", None),
                 progress_label=progress_dialog.statusLabel,
                 progress_bar=progress_dialog.progressBar,
                 output_text=progress_dialog.outputText,

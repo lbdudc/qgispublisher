@@ -4,7 +4,7 @@ from ..core.dependencies_checker import check_node_gispublisher
 
 class GISPublisherRunner:
 
-    def __init__(self, layers, output_dir, progress_label, progress_bar, output_text, parent=None, finished_callback=None):
+    def __init__(self, layers, output_dir, progress_label, progress_bar, output_text, parent=None, finished_callback=None, chart_folder=None):
         self.layers = layers
         self.output_dir = output_dir
         self.progress_label = progress_label
@@ -12,8 +12,10 @@ class GISPublisherRunner:
         self.output_text = output_text
         self.parent = parent
         self.finished_callback = finished_callback
+        self.chart_folder = chart_folder
         self.temp_dir = tempfile.mkdtemp(prefix="qgis_gispublisher_")
-        os.makedirs(os.path.join(self.temp_dir, "charts"), exist_ok=True)
+        self.charts_temp_dir = os.path.join(self.temp_dir, "charts")
+        os.makedirs(self.charts_temp_dir, exist_ok=True)
         self.process = None
         self.timer = None
         self.fake_progress = 0
@@ -28,11 +30,22 @@ class GISPublisherRunner:
                 if file.exists():
                     shutil.copy(file, self.temp_dir)
 
+    def copy_chart_folder(self):
+        if self.chart_folder and os.path.exists(self.chart_folder):
+            for item in os.listdir(self.chart_folder):
+                src_path = os.path.join(self.chart_folder, item)
+                dst_path = os.path.join(self.charts_temp_dir, item)
+                if os.path.isfile(src_path):
+                    shutil.copy2(src_path, dst_path)
+                elif os.path.isdir(src_path):
+                    shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
+
     def start(self, generate=False, config_path=None):
         gispub_path = check_node_gispublisher()
         args = []
 
         self.copy_layers_directly()
+        self.copy_chart_folder()
 
         if generate:
             shapefiles_folder = self.temp_dir
@@ -50,13 +63,13 @@ class GISPublisherRunner:
         self.run_gispublisher(gispub_path, args, working_dir)
 
     def run_gispublisher(self, gispub_path, args, working_dir=None):
-        self.progress_label.setText("Running GISPublisher...")
+        self.progress_label.setText("Ejecutando GISPublisher...")
         self.progress_label.setVisible(True)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
 
         self.output_text.clear()
-        self.output_text.appendPlainText("> Starting GISPublisher...\n")
+        self.output_text.appendPlainText("> Iniciando GISPublisher...\n")
 
         self.process = QProcess()
         self.process.setProgram(gispub_path)
@@ -98,8 +111,8 @@ class GISPublisherRunner:
             self.timer.stop()
 
         self.progress_bar.setValue(100)
-        self.progress_label.setText("GISPublisher finished ✅")
-        self.output_text.appendPlainText("\n> Process finished.")
+        self.progress_label.setText("GISPublisher finalizado ✅")
+        self.output_text.appendPlainText("\n> Proceso finalizado.")
 
         if self.finished_callback:
             self.finished_callback()
