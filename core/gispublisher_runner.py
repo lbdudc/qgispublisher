@@ -1,6 +1,8 @@
 import os, tempfile, pathlib, shutil
 from PyQt5.QtCore import QProcess, QTimer
 from PyQt5.QtWidgets import QMessageBox
+from PyQt5.QtGui import QDesktopServices
+from PyQt5.QtCore import QUrl
 from ..core.dependencies_checker import check_node_gispublisher
 
 class GISPublisherRunner:
@@ -45,6 +47,7 @@ class GISPublisherRunner:
         gispub_path = check_node_gispublisher()
         args = []
 
+        self.generate = generate
         self.copy_layers_directly()
         self.copy_chart_folder()
 
@@ -116,6 +119,24 @@ class GISPublisherRunner:
             msg_box.setInformativeText(message)
         msg_box.exec_()
 
+    def show_success_popup(self):
+        msg_box = QMessageBox(self.parent)
+        msg_box.setIcon(QMessageBox.Information)
+        msg_box.setWindowTitle("Proceso completado")
+
+        if self.generate:
+            msg_box.setText("El producto se ha generado correctamente.")
+            open_button = msg_box.addButton("Abrir carpeta", QMessageBox.ActionRole)
+        else:
+            msg_box.setText("El despliegue se ha completado correctamente.")
+            open_button = None
+
+        msg_box.addButton(QMessageBox.Ok)
+        msg_box.exec_()
+
+        if self.generate and msg_box.clickedButton() == open_button:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self.output_dir))
+
     def finished(self, exitCode, exitStatus):
         if self.timer:
             self.timer.stop()
@@ -125,6 +146,7 @@ class GISPublisherRunner:
             self.progress_bar.setStyleSheet("")
             self.progress_label.setText("GISPublisher finalizado ✅")
             self.output_text.appendPlainText("\n> Proceso finalizado correctamente.")
+            self.show_success_popup()
         else:
             self.progress_label.setText("GISPublisher falló ❌")
             self.output_text.appendPlainText(f"\n> Proceso finalizado con errores (código de salida {exitCode}).")

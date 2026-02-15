@@ -147,7 +147,8 @@ class DeployDialog(QDialog, DEPLOY_FORM_CLASS):
                 output_text=progress_dialog.outputText,
                 parent=self,
                 finished_callback=lambda: (
-                    progress_dialog.closeButton.setEnabled(True),
+                    progress_dialog.close(),  
+                    self.close(),      
                     os.remove(config_path)
                 )
             )

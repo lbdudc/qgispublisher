@@ -71,9 +71,8 @@ class GenerateDialog(QDialog, FORM_CLASS):
                 output_text=progress_dialog.outputText,
                 parent=self,
                 finished_callback=lambda: (
-                    progress_dialog.closeButton.setEnabled(True),
-                    self.generateButton.setEnabled(True),
-                    self.cancelButton.setEnabled(True)
+                    progress_dialog.close(),
+                    self.close()
                 )
             )
             self.runner.start(generate=True)

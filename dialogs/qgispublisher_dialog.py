@@ -20,7 +20,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self.infoLabel.setVisible(False)
 
         self.selected_chart_folder = None
-        self.chartFolderLabel.setText("No se ha seleccionado carpeta de gráficos")
+        self.chartFolderLabel.setText("")
 
         self.generateButton.clicked.connect(self.open_generate_dialog)
         self.deployButton.clicked.connect(self.open_deploy_dialog)
@@ -104,7 +104,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             self.chartFolderLabel.setText(f"Carpeta seleccionada: {folder}")
         else:
             self.selected_chart_folder = None
-            self.chartFolderLabel.setText("No se ha seleccionado carpeta de gráficos")
+            self.chartFolderLabel.setText("")
 
     def open_generate_dialog(self):
         project = QgsProject.instance()

@@ -86,7 +86,7 @@
     <item>
      <widget class="QLabel" name="label_2">
       <property name="text">
-       <string>Selecciona la carpeta de gráficos (opcional)</string>
+       <string>Selecciona la carpeta de gráficos: (opcional)</string>
       </property>
      </widget>
     </item>
