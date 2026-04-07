@@ -23,7 +23,7 @@ class DeployProgressDialog(QDialog, DEPLOY_PROGRESS_FORM_CLASS):
 class DeployDialog(QDialog, DEPLOY_FORM_CLASS):
     """Main deployment dialog: choose Local/SSH/AWS.""" 
 
-    DEBUG = True
+    DEBUG = False
 
     def __init__(self, parent=None):
         super().__init__(parent)

@@ -23,7 +23,7 @@ class GenerateProgressDialog(QDialog, PROGRESS_FORM_CLASS):
 class GenerateDialog(QDialog, FORM_CLASS):
     """Dialog to select layers and output folder for generation."""
 
-    DEBUG = True
+    DEBUG = False
     
     def __init__(self, layers, parent=None):
         super().__init__(parent)
