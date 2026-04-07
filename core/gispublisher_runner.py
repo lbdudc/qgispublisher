@@ -1,8 +1,9 @@
-import os, tempfile, pathlib, shutil
+import os, tempfile, pathlib, shutil, urllib.parse
 from PyQt5.QtCore import QProcess, QTimer
 from PyQt5.QtWidgets import QMessageBox
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtCore import QUrl
+from qgis.core import QgsMapLayer
 from ..core.dependencies_checker import check_node_gispublisher
 
 class GISPublisherRunner:
@@ -25,7 +26,25 @@ class GISPublisherRunner:
         self.debug = debug
 
     def copy_layers_directly(self):
+        wms_urls = []
+
         for layer in self.layers:
+            # Raster Layer
+            if layer.type() == QgsMapLayer.RasterLayer:
+                source = layer.source()
+                # WMS layers include "url=" in their source string
+                if "url=" in source.lower():
+                    parts = dict(
+                        part.split("=", 1)
+                        for part in source.split("&")
+                        if "=" in part
+                    )
+                    url = parts.get("url") or parts.get("URL")
+                    if url:
+                        wms_urls.append(urllib.parse.unquote(url))
+                continue
+
+            # Vector Layer
             source = pathlib.Path(layer.source()).resolve()
             base = source.with_suffix("")
 
@@ -33,6 +52,11 @@ class GISPublisherRunner:
                 file = base.with_suffix(ext)
                 if file.exists():
                     shutil.copy(file, self.temp_dir)
+
+        if wms_urls:
+            wms_file = os.path.join(self.temp_dir, "urls.wms")
+            with open(wms_file, "w", encoding="utf-8") as f:
+                f.write("\n".join(wms_urls))
 
     def copy_chart_folder(self):
         if self.chart_folder and os.path.exists(self.chart_folder):
@@ -160,11 +184,13 @@ class GISPublisherRunner:
             self.progress_bar.setValue(100)
             self.progress_bar.setStyleSheet("")
             self.progress_label.setText("GISPublisher finalizado ✅")
-            self.output_text.appendPlainText("\n> Proceso finalizado correctamente.")
+            if self.output_text:
+                self.output_text.appendPlainText("\n> Proceso finalizado correctamente.")
             self.show_success_popup()
         else:
             self.progress_label.setText("GISPublisher falló ❌")
-            self.output_text.appendPlainText(f"\n> Proceso finalizado con errores (código de salida {exitCode}).")
+            if self.output_text:
+                self.output_text.appendPlainText(f"\n> Proceso finalizado con errores (código de salida {exitCode}).")
             self.show_error_popup()
 
         if self.finished_callback:

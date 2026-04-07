@@ -40,7 +40,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         layers = project.mapLayers().values()
 
         for layer in layers:
-            if layer.type() != QgsMapLayer.VectorLayer:
+            if layer.type() not in (QgsMapLayer.VectorLayer, QgsMapLayer.RasterLayer):
                 continue
 
             item = QListWidgetItem(layer.name())
