@@ -69,6 +69,7 @@ class GenerateDialog(QDialog, FORM_CLASS):
                 layers=self.layers,
                 output_dir=self.output_dir,
                 chart_folder=getattr(self.parent(), "selected_chart_folder", None),
+                model_folder=getattr(self.parent(), "selected_model_folder", None),
                 progress_label=progress_dialog.statusLabel,
                 progress_bar=progress_dialog.progressBar,
                 output_text=progress_dialog.outputText if self.DEBUG else None,

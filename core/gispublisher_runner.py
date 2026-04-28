@@ -8,7 +8,7 @@ from ..core.dependencies_checker import check_node_gispublisher
 
 class GISPublisherRunner:
 
-    def __init__(self, layers, output_dir, progress_label, progress_bar, output_text, parent=None, finished_callback=None, chart_folder=None, debug=False):
+    def __init__(self, layers, output_dir, progress_label, progress_bar, output_text, parent=None, finished_callback=None, chart_folder=None, model_folder=None, debug=False):
         self.layers = layers
         self.output_dir = output_dir
         self.progress_label = progress_label
@@ -17,9 +17,12 @@ class GISPublisherRunner:
         self.parent = parent
         self.finished_callback = finished_callback
         self.chart_folder = chart_folder
+        self.model_folder = model_folder
         self.temp_dir = tempfile.mkdtemp(prefix="qgis_gispublisher_")
         self.charts_temp_dir = os.path.join(self.temp_dir, "charts")
         os.makedirs(self.charts_temp_dir, exist_ok=True)
+        self.models_temp_dir = os.path.join(self.temp_dir, "models")
+        os.makedirs(self.models_temp_dir, exist_ok=True)
         self.process = None
         self.timer = None
         self.fake_progress = 0
@@ -68,6 +71,16 @@ class GISPublisherRunner:
                 elif os.path.isdir(src_path):
                     shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
 
+    def copy_model_folder(self):
+        if self.model_folder and os.path.exists(self.model_folder):
+            for item in os.listdir(self.model_folder):
+                src_path = os.path.join(self.model_folder, item)
+                dst_path = os.path.join(self.models_temp_dir, item)
+                if os.path.isfile(src_path) and src_path.endswith(".model3"):
+                    shutil.copy2(src_path, dst_path)
+                elif os.path.isdir(src_path):
+                    shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
+
     def start(self, generate=False, config_path=None):
         gispub_path = check_node_gispublisher()
         args = []
@@ -75,6 +88,7 @@ class GISPublisherRunner:
         self.generate = generate
         self.copy_layers_directly()
         self.copy_chart_folder()
+        self.copy_model_folder()
 
         if generate:
             shapefiles_folder = self.temp_dir

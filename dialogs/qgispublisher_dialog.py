@@ -21,6 +21,8 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
 
         self.selected_chart_folder = None
         self.chartFolderLabel.setText("")
+        self.selected_model_folder = None
+        self.modelFolderLabel.setText("")
 
         self.generateButton.clicked.connect(self.open_generate_dialog)
         self.deployButton.clicked.connect(self.open_deploy_dialog)
@@ -28,6 +30,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self.selectAllButton.clicked.connect(self.select_all_layers)
         self.layersList.itemChanged.connect(self.update_selection_state)
         self.selectChartFolderButton.clicked.connect(self.select_chart_folder)
+        self.selectModelFolderButton.clicked.connect(self.select_model_folder)
 
         QgsProject.instance().layersAdded.connect(self.load_layers)
         QgsProject.instance().layersRemoved.connect(self.load_layers)
@@ -105,6 +108,21 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         else:
             self.selected_chart_folder = None
             self.chartFolderLabel.setText("")
+    
+    def select_model_folder(self):
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Seleccionar carpeta de modelos",
+            ""
+        )
+ 
+        if folder:
+            self.selected_model_folder = folder
+            self.modelFolderLabel.setWordWrap(True)
+            self.modelFolderLabel.setText(f"Carpeta seleccionada: {folder}")
+        else:
+            self.selected_model_folder = None
+            self.modelFolderLabel.setText("")
 
     def open_generate_dialog(self):
         project = QgsProject.instance()
