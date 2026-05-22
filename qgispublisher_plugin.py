@@ -12,7 +12,7 @@ class GISPublisherPlugin:
         self.action = None
 
     def initGui(self):
-        icon_path = os.path.join(self.plugin_dir, "icons", "qgispublisher.png")
+        icon_path = os.path.join(self.plugin_dir, "icons", "qgispublisher.svg")
         self.action = QAction(QIcon(icon_path), "GISPublisher", self.iface.mainWindow())
         self.action.triggered.connect(self.run)
         self.iface.addToolBarIcon(self.action)
