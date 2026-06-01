@@ -13,9 +13,10 @@ This plugin integrates **[GisPublisher]https://gitlab.lbd.udc.es/GEMA/lps/gispub
 1. [Installation](#installation)
 2. [Usage](#usage)
 3. [Data Visualizations with Vega](#data-visualizations-with-vega)
-4. [Requirements](#requirements)
-5. [Authors](#authors)
-6. [License](#license)
+4. [Geoprocessing Models](#geoprocessing-models)
+5. [Requirements](#requirements)
+6. [Authors](#authors)
+7. [License](#license)
 
 ## Installation
 
@@ -35,10 +36,23 @@ This plugin integrates **[GisPublisher]https://gitlab.lbd.udc.es/GEMA/lps/gispub
 3. Once the requirements are met, a window will appear where you can:
    - Select the layers from your current QGIS project that you want to include in the generated application.
    - Optionally, select a `charts` folder containing **Vega** or **Vega-Lite** charts.
+   - Optionally, select a `models` folder containing QGIS geoprocessing models (`.model3` files).
 4. Choose one of the following actions:
    - **Generate**: Select a destination folder where the GIS application will be generated using GisPublisher, including the selected layers and charts.
    - **Deploy**: Open a deployment window where you can provide configuration details to deploy the application to **local**, **SSH**, or **AWS** environments.
 5. After the action completes, a message box will inform you whether the generation or deployment was successful, or if an error occurred.
+
+## Geoprocessing Models
+
+The plugin supports including custom QGIS geoprocessing models in the generated application. These models are created in QGIS using the **Graphical Modeler** and exported as `.model3` files.
+
+To include models, select a `models` folder in the plugin dialog. All `.model3` files found in that folder will be copied into the generated application and made available in the **Toolbox** panel alongside the built-in QGIS processes.
+
+To create and export a model from QGIS:
+1. Open **Processing → Graphical Modeler**.
+2. Design your model and save it.
+3. Export it as a `.model3` file via **Model → Save Model to File**.
+4. Place the exported file in the `models` folder you will select in the plugin.
 
 ## Requirements
 
@@ -47,6 +61,7 @@ This plugin integrates **[GisPublisher]https://gitlab.lbd.udc.es/GEMA/lps/gispub
 - GisPublisher installed and accessible from the system PATH
 - Layers loaded in QGIS that you want to include in your GIS application 
 - Optional: `charts` folder containing valid Vega or Vega-Lite charts 
+- Optional: `models` folder containing QGIS geoprocessing model files (`.model3`)
 
 ## Authors
 
