@@ -34,6 +34,7 @@ class DeployDialog(QDialog, DEPLOY_FORM_CLASS):
         self.radioAWS.toggled.connect(self.update_stack)
 
         self.deployButton.clicked.connect(self.start_deploy)
+        self.cancelButton.clicked.connect(self.close)
 
         self.update_stack()
 
@@ -83,7 +84,7 @@ class DeployDialog(QDialog, DEPLOY_FORM_CLASS):
         elif self.radioSSH.isChecked():
             deploy_section = {
                 "deploy": {
-                    "type": "local",
+                    "type": "ssh",
                     "host": self.sshHostEdit.text(),
                     "port": int(self.sshPortEdit.text() or 22),
                     "username": self.sshUsernameEdit.text(),
@@ -123,8 +124,7 @@ class DeployDialog(QDialog, DEPLOY_FORM_CLASS):
         return temp_file.name
 
     def start_deploy(self):
-        layers = [layer for layer in QgsProject.instance().mapLayers().values()
-                if layer.type() == QgsMapLayer.VectorLayer]
+        layers = list(QgsProject.instance().mapLayers().values())
 
         if not layers:
             QMessageBox.warning(self, "Atención", "No hay capas vectoriales disponibles para desplegar.")
