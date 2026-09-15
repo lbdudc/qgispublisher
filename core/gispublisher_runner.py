@@ -47,8 +47,8 @@ class GISPublisherRunner:
                         wms_urls.append(urllib.parse.unquote(url))
                 continue
 
-            # Vector Layer
-            source = pathlib.Path(layer.source()).resolve()
+            # Vector Layer — strip QGIS URI suffix (e.g. |layername=...)
+            source = pathlib.Path(layer.source().split("|")[0]).resolve()
             base = source.with_suffix("")
 
             for ext in [".shp", ".dbf", ".shx", ".prj", ".cpg"]:
