@@ -4,6 +4,32 @@ import sys
 import shutil
 
 
+def _windows_full_path():
+    """Return a PATH string that includes entries from the Windows registry.
+
+    QGIS may launch with a restricted PATH. Reading from the registry
+    ensures we find executables installed in user-configured locations
+    (e.g. C:\\nodejs, nvm-windows, Scoop, etc.).
+    """
+    try:
+        import winreg
+        parts = [os.environ.get("PATH", "")]
+        for hive, subkey in [
+            (winreg.HKEY_LOCAL_MACHINE,
+             r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+            (winreg.HKEY_CURRENT_USER, r"Environment"),
+        ]:
+            try:
+                with winreg.OpenKey(hive, subkey) as key:
+                    val, _ = winreg.QueryValueEx(key, "Path")
+                    parts.append(os.path.expandvars(val))
+            except OSError:
+                pass
+        return os.pathsep.join(parts)
+    except Exception:
+        return os.environ.get("PATH", "")
+
+
 def check_node_gispublisher():
     """Check Node.js and GISPublisher, raise Exception if missing."""
     node_result = find_node()
@@ -17,6 +43,10 @@ def find_node():
     """Locate the Node.js executable, cross-platform."""
     # shutil.which covers any platform where node is on PATH
     node = shutil.which("node") or shutil.which("node.exe")
+    # On Windows, QGIS may have a restricted PATH — retry with registry PATH
+    if not node and sys.platform == "win32":
+        win_path = _windows_full_path()
+        node = shutil.which("node.exe", path=win_path) or shutil.which("node", path=win_path)
     if node:
         node_dir = os.path.dirname(node)
         if node_dir not in os.environ.get("PATH", ""):
@@ -59,6 +89,10 @@ def find_node():
 def find_npm():
     """Locate the npm executable, cross-platform."""
     npm = shutil.which("npm") or shutil.which("npm.cmd")
+    # On Windows, QGIS may have a restricted PATH — retry with registry PATH
+    if not npm and sys.platform == "win32":
+        win_path = _windows_full_path()
+        npm = shutil.which("npm.cmd", path=win_path) or shutil.which("npm", path=win_path)
     if npm:
         return npm
 
