@@ -4,6 +4,7 @@ from PyQt5.QtWidgets import QDialog, QFileDialog, QMessageBox
 from qgis.core import QgsProject, QgsMapLayer
 import os, json, tempfile, pathlib, subprocess
 from ..core.gispublisher_runner import GISPublisherRunner
+from ..core.dependencies_checker import find_npm
 
 DEPLOY_FORM_CLASS, _ = uic.loadUiType(
     os.path.join(os.path.dirname(__file__), "ui", "deploy_dialog.ui")
@@ -49,10 +50,9 @@ class DeployDialog(QDialog, DEPLOY_FORM_CLASS):
 
     def get_gispublisher_root(self):
         result = subprocess.run(
-            ["npm", "root", "-g"],
+            [find_npm(), "root", "-g"],
             capture_output=True,
             text=True,
-            shell=True
         )
         npm_root = pathlib.Path(result.stdout.strip())
         return npm_root / "@lbdudc" / "gis-publisher"

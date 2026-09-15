@@ -79,7 +79,7 @@ def find_npm():
 
 def get_npm_prefix():
     npm_path = find_npm()
-    result = subprocess.run(
+    result = subprocess.run(  # nosec B603 - npm_path is a fully-resolved path from shutil.which()
         [npm_path, "config", "get", "prefix"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -113,7 +113,7 @@ def find_gispublisher():
             if os.path.exists(path):
                 return path
     except Exception:
-        pass
+        pass  # npm prefix unavailable; will raise below if gispublisher not found
 
     raise Exception(
         "GISPublisher is not installed. Run: npm install -g @lbdudc/gis-publisher"

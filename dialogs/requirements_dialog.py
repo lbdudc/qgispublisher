@@ -20,7 +20,7 @@ class InstallGisPublisherThread(QThread):
             kwargs = {}
             if sys.platform == "win32":
                 kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-            subprocess.run(
+            subprocess.run(  # nosec B603 - npm_path is a fully-resolved path from shutil.which()
                 [npm_path, "install", "-g", "@lbdudc/gis-publisher"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
