@@ -11,8 +11,8 @@ version=0.1
 qgisMinimumVersion=3.0
 qgisMaximumVersion=3.99
 
-author=Patricia Mato
-email=patricia.mato.miragaya@udc.es
+author=Patricia Mato, Victor Lamas
+email=patricia.mato.miragaya@udc.es, victor.lamas@udc.es
 
 homepage=https://github.com/lbdudc/qgispublisher
 repository=https://github.com/lbdudc/qgispublisher
