@@ -1,7 +1,7 @@
 [general]
 name=GISPublisher
 description=Generate and deploy interactive GIS web applications directly from QGIS layers.
-about=GISPublisher Plugin integrates the GISPublisher tool into QGIS, allowing you to generate and deploy interactive GIS web applications directly from the layers loaded in your QGIS project. Select vector or raster layers, optionally include Vega/Vega-Lite charts and QGIS geoprocessing models (.model3), then generate a complete web app or deploy it to local, SSH, or AWS environments — all without leaving QGIS.
+about=GISPublisher Plugin integrates the GISPublisher tool into QGIS, allowing you to generate and deploy interactive GIS web applications directly from the layers loaded in your QGIS project. Select vector or raster layers, optionally include Vega/Vega-Lite charts and QGIS geoprocessing models (.model3), then generate a complete web app or deploy it to local, SSH, or AWS environments - all without leaving QGIS.
 
   External dependencies (must be installed before use):
   - Node.js 19 or later (https://nodejs.org/en/download)
