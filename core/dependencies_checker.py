@@ -112,8 +112,8 @@ def find_gispublisher():
         for path in candidates:
             if os.path.exists(path):
                 return path
-    except Exception:
-        pass  # npm prefix unavailable; will raise below if gispublisher not found
+    except Exception:  # nosec B110 - intentional; will raise below if gispublisher not found
+        pass
 
     raise Exception(
         "GISPublisher is not installed. Run: npm install -g @lbdudc/gis-publisher"

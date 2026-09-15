@@ -49,7 +49,7 @@ class DeployDialog(QDialog, DEPLOY_FORM_CLASS):
             self.deployWidget.setCurrentIndex(2)
 
     def get_gispublisher_root(self):
-        result = subprocess.run(
+        result = subprocess.run(  # nosec B603 - find_npm() returns a fully-resolved path
             [find_npm(), "root", "-g"],
             capture_output=True,
             text=True,
