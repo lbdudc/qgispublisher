@@ -62,6 +62,20 @@ def find_npm():
     if npm:
         return npm
 
+    # Ensure node's directory is on PATH, then retry.
+    # This covers cases where find_npm() is called without find_node() first.
+    node_result = find_node()
+    if node_result["installed"]:
+        npm = shutil.which("npm") or shutil.which("npm.cmd")
+        if npm:
+            return npm
+        # Also look for npm alongside the node executable
+        node_dir = os.path.dirname(node_result["path"])
+        for name in ("npm", "npm.cmd"):
+            candidate = os.path.join(node_dir, name)
+            if os.path.exists(candidate):
+                return candidate
+
     if sys.platform == "win32":
         candidates = [
             r"C:\Program Files\nodejs\npm.cmd",
