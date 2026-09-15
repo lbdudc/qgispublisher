@@ -1,3 +1,4 @@
+import sys
 from PyQt5 import uic
 from PyQt5.QtWidgets import QDialog, QFileDialog, QMessageBox
 from qgis.core import QgsProject, QgsMapLayer
@@ -113,7 +114,7 @@ class DeployDialog(QDialog, DEPLOY_FORM_CLASS):
             }
 
         else:
-            raise ValueError("Tipo de despliegue no seleccionado.")
+            raise ValueError("No deployment type selected.")
 
         final_json = {**base_json, **deploy_section}
 
@@ -127,7 +128,7 @@ class DeployDialog(QDialog, DEPLOY_FORM_CLASS):
         layers = list(QgsProject.instance().mapLayers().values())
 
         if not layers:
-            QMessageBox.warning(self, "Atención", "No hay capas vectoriales disponibles para desplegar.")
+            QMessageBox.warning(self, "Warning", "No layers available to deploy.")
             return
 
         try:
@@ -139,8 +140,10 @@ class DeployDialog(QDialog, DEPLOY_FORM_CLASS):
 
             config_path = self.generate_deploy_config()
 
-            if self.radioLocal.isChecked():
-                os.environ["PATH"] += os.pathsep + r"C:\Program Files\Docker\Docker\resources\bin"
+            if self.radioLocal.isChecked() and sys.platform == "win32":
+                docker_bin = r"C:\Program Files\Docker\Docker\resources\bin"
+                if os.path.isdir(docker_bin):
+                    os.environ["PATH"] += os.pathsep + docker_bin
 
             self.runner = GISPublisherRunner(
                 layers=layers,

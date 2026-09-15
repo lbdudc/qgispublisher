@@ -44,10 +44,10 @@ class GenerateDialog(QDialog, FORM_CLASS):
         self.cancelButton.clicked.connect(self.close)
 
     def select_output_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Selecciona la carpeta de salida", "")
+        folder = QFileDialog.getExistingDirectory(self, "Select output folder", "")
         if folder:
             self.output_dir = folder
-            self.outputFolderLabel.setText(f"El producto se generará en: {folder}")
+            self.outputFolderLabel.setText(f"Output folder: {folder}")
             self.generateButton.setEnabled(True)
             self.outputRequiredLabel.setVisible(False)
         else:

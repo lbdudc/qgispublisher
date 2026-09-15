@@ -97,14 +97,14 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
     def select_chart_folder(self):
         folder = QFileDialog.getExistingDirectory(
             self,
-            "Seleccionar carpeta de gráficos",
+            "Select charts folder",
             ""
         )
 
         if folder:
             self.selected_chart_folder = folder
             self.chartFolderLabel.setWordWrap(True)
-            self.chartFolderLabel.setText(f"Carpeta seleccionada: {folder}")
+            self.chartFolderLabel.setText(f"Selected folder: {folder}")
         else:
             self.selected_chart_folder = None
             self.chartFolderLabel.setText("")
@@ -112,14 +112,14 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
     def select_model_folder(self):
         folder = QFileDialog.getExistingDirectory(
             self,
-            "Seleccionar carpeta de modelos",
+            "Select models folder",
             ""
         )
  
         if folder:
             self.selected_model_folder = folder
             self.modelFolderLabel.setWordWrap(True)
-            self.modelFolderLabel.setText(f"Carpeta seleccionada: {folder}")
+            self.modelFolderLabel.setText(f"Selected folder: {folder}")
         else:
             self.selected_model_folder = None
             self.modelFolderLabel.setText("")

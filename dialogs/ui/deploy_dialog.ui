@@ -11,7 +11,7 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>Seleccionar tipo de despliegue</string>
+   <string>Select deployment type</string>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <item>
@@ -23,7 +23,7 @@
       </font>
      </property>
      <property name="title">
-      <string>Tipo de despliegue</string>
+      <string>Deployment type</string>
      </property>
      <property name="flat">
       <bool>true</bool>
@@ -54,7 +54,7 @@
          </rect>
         </property>
         <property name="text">
-         <string>Despliegue Local</string>
+         <string>Local deployment</string>
         </property>
        </widget>
        <widget class="QWidget" name="widget_3" native="true">
@@ -95,7 +95,7 @@
          </rect>
         </property>
         <property name="text">
-         <string>Despliegue SSH</string>
+         <string>SSH deployment</string>
         </property>
        </widget>
        <widget class="QWidget" name="widget" native="true">
@@ -134,7 +134,7 @@
          <item row="2" column="0">
           <widget class="QLabel" name="label_4">
            <property name="text">
-            <string>Ruta clave privada</string>
+            <string>Private key path</string>
            </property>
           </widget>
          </item>
@@ -144,7 +144,7 @@
          <item row="4" column="0">
           <widget class="QLabel" name="label_17">
            <property name="text">
-            <string>Ruta repositorio remoto</string>
+            <string>Remote repository path</string>
            </property>
           </widget>
          </item>
@@ -166,7 +166,7 @@
          <item row="0" column="0">
           <widget class="QLabel" name="label_5">
            <property name="text">
-            <string>Usuario</string>
+            <string>Username</string>
            </property>
           </widget>
          </item>
@@ -189,7 +189,7 @@
          <item row="2" column="0">
           <widget class="QLabel" name="label_6">
            <property name="text">
-            <string>Puerto</string>
+            <string>Port</string>
            </property>
           </widget>
          </item>
@@ -226,7 +226,7 @@
          </rect>
         </property>
         <property name="text">
-         <string>Despliegue AWS</string>
+         <string>AWS deployment</string>
         </property>
        </widget>
        <widget class="QWidget" name="widget_4" native="true">
@@ -265,7 +265,7 @@
          <item row="2" column="0">
           <widget class="QLabel" name="label_12">
            <property name="text">
-            <string>Tipo de instancia</string>
+            <string>Instance type</string>
            </property>
           </widget>
          </item>
@@ -275,7 +275,7 @@
          <item row="4" column="0">
           <widget class="QLabel" name="label_15">
            <property name="text">
-            <string>Nombre instancia</string>
+            <string>Instance name</string>
            </property>
           </widget>
          </item>
@@ -298,7 +298,7 @@
          <item row="6" column="0">
           <widget class="QLabel" name="label_14">
            <property name="text">
-            <string>Usuario SSH</string>
+            <string>SSH username</string>
            </property>
           </widget>
          </item>
@@ -308,7 +308,7 @@
          <item row="8" column="0">
           <widget class="QLabel" name="label_19">
            <property name="text">
-            <string>Ruta clave ssh</string>
+            <string>SSH key path</string>
            </property>
           </widget>
          </item>
@@ -333,14 +333,14 @@
          <item row="4" column="0">
           <widget class="QLabel" name="label_11">
            <property name="text">
-            <string>Región</string>
+            <string>Region</string>
            </property>
           </widget>
          </item>
          <item row="8" column="0">
           <widget class="QLabel" name="label_18">
            <property name="text">
-            <string>Par de claves</string>
+            <string>Key pair</string>
            </property>
           </widget>
          </item>
@@ -350,7 +350,7 @@
          <item row="10" column="0">
           <widget class="QLabel" name="label_20">
            <property name="text">
-            <string>Ruta repositorio remoto</string>
+            <string>Remote repository path</string>
            </property>
           </widget>
          </item>
@@ -399,21 +399,21 @@
          <item row="0" column="0">
           <widget class="QLabel" name="label_7">
            <property name="text">
-            <string>Clave de acceso</string>
+            <string>Access key</string>
            </property>
           </widget>
          </item>
          <item row="2" column="0">
           <widget class="QLabel" name="label_8">
            <property name="text">
-            <string>Clave secreta</string>
+            <string>Secret key</string>
            </property>
           </widget>
          </item>
          <item row="6" column="0">
           <widget class="QLabel" name="label_10">
            <property name="text">
-            <string>ID grupo seguridad</string>
+            <string>Security group ID</string>
            </property>
           </widget>
          </item>
@@ -488,14 +488,14 @@
        <item>
         <widget class="QPushButton" name="deployButton">
          <property name="text">
-          <string>Aceptar</string>
+          <string>Deploy</string>
          </property>
         </widget>
        </item>
        <item>
         <widget class="QPushButton" name="cancelButton">
          <property name="text">
-          <string>Cancelar</string>
+          <string>Cancel</string>
          </property>
         </widget>
        </item>

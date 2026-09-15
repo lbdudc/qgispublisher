@@ -11,7 +11,7 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>Generar aplicación</string>
+   <string>Generate application</string>
   </property>
   <widget class="QListWidget" name="layersList">
    <property name="geometry">
@@ -39,7 +39,7 @@
     </rect>
    </property>
    <property name="text">
-    <string>Lista de capas seleccionadas</string>
+    <string>Selected layers</string>
    </property>
   </widget>
   <widget class="QLabel" name="folderLabel">
@@ -52,7 +52,7 @@
     </rect>
    </property>
    <property name="text">
-    <string>Selecciona la carpeta de salida:</string>
+    <string>Select output folder:</string>
    </property>
   </widget>
   <widget class="QLabel" name="label">
@@ -71,7 +71,7 @@
     </font>
    </property>
    <property name="text">
-    <string>Generar producto</string>
+    <string>Generate</string>
    </property>
   </widget>
   <widget class="QLabel" name="outputFolderLabel">
@@ -106,14 +106,14 @@
     <item>
      <widget class="QPushButton" name="generateButton">
       <property name="text">
-       <string>Generar</string>
+       <string>Generate</string>
       </property>
      </widget>
     </item>
     <item>
      <widget class="QPushButton" name="cancelButton">
       <property name="text">
-       <string>Cancelar</string>
+       <string>Cancel</string>
       </property>
      </widget>
     </item>
@@ -132,7 +132,7 @@
     <item>
      <widget class="QPushButton" name="selectFolderButton">
       <property name="text">
-       <string>Seleccionar carpeta</string>
+       <string>Select folder</string>
       </property>
      </widget>
     </item>
@@ -142,7 +142,7 @@
        <string notr="true">color: #cc8400;</string>
       </property>
       <property name="text">
-       <string>⚠obligatorio</string>
+       <string>⚠ required</string>
       </property>
      </widget>
     </item>

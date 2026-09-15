@@ -11,7 +11,7 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>QGISPublisher</string>
+   <string>GISPublisher</string>
   </property>
   <widget class="QLabel" name="outputFolderLabel">
    <property name="geometry">
@@ -47,14 +47,14 @@
       <item>
        <widget class="QLabel" name="label">
         <property name="text">
-         <string>Lista de capas seleccionadas</string>
+         <string>Selected layers</string>
         </property>
        </widget>
       </item>
       <item>
        <widget class="QPushButton" name="selectAllButton">
         <property name="text">
-         <string>Seleccionar todo</string>
+         <string>Select all</string>
         </property>
        </widget>
       </item>
@@ -76,7 +76,7 @@
        <string notr="true">color: #cc8400;</string>
       </property>
       <property name="text">
-       <string>⚠ No hay capas seleccionadas</string>
+       <string>⚠ No layers selected</string>
       </property>
       <property name="wordWrap">
        <bool>true</bool>
@@ -86,14 +86,14 @@
     <item>
      <widget class="QLabel" name="label_2">
       <property name="text">
-       <string>Selecciona la carpeta de gráficos: (opcional)</string>
+       <string>Charts folder: (optional)</string>
       </property>
      </widget>
     </item>
     <item>
      <widget class="QPushButton" name="selectChartFolderButton">
       <property name="text">
-       <string>Seleccionar carpeta</string>
+       <string>Select folder</string>
       </property>
      </widget>
     </item>
@@ -113,14 +113,14 @@
     <item>
      <widget class="QLabel" name="label_3">
       <property name="text">
-       <string>Selecciona la carpeta de modelos: (opcional)</string>
+       <string>Models folder: (optional)</string>
       </property>
      </widget>
     </item>
     <item>
      <widget class="QPushButton" name="selectModelFolderButton">
       <property name="text">
-       <string>Seleccionar carpeta</string>
+       <string>Select folder</string>
       </property>
      </widget>
     </item>
@@ -142,21 +142,21 @@
       <item>
        <widget class="QPushButton" name="deployButton">
         <property name="text">
-         <string>Desplegar</string>
+         <string>Deploy</string>
         </property>
        </widget>
       </item>
       <item>
        <widget class="QPushButton" name="generateButton">
         <property name="text">
-         <string>Generar</string>
+         <string>Generate</string>
         </property>
        </widget>
       </item>
       <item>
        <widget class="QPushButton" name="cancelButton">
         <property name="text">
-         <string>Cancelar</string>
+         <string>Cancel</string>
         </property>
        </widget>
       </item>

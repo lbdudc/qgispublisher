@@ -11,7 +11,7 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>Requisitos del sistema</string>
+   <string>System requirements</string>
   </property>
   <widget class="QLabel" name="label_3">
    <property name="geometry">
@@ -29,7 +29,7 @@
     </font>
    </property>
    <property name="text">
-    <string>Requisitos para ejecutar gispublisher</string>
+    <string>Requirements to run GISPublisher</string>
    </property>
    <property name="alignment">
     <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
@@ -172,7 +172,7 @@
      </rect>
     </property>
     <property name="text">
-     <string>Instalar GISPublisher</string>
+     <string>Install GISPublisher</string>
     </property>
    </widget>
   </widget>
@@ -186,7 +186,7 @@
     </rect>
    </property>
    <property name="text">
-    <string>Cerrar</string>
+    <string>Close</string>
    </property>
   </widget>
  </widget>

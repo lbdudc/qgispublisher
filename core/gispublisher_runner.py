@@ -106,14 +106,14 @@ class GISPublisherRunner:
         self.run_gispublisher(gispub_path, args, working_dir)
 
     def run_gispublisher(self, gispub_path, args, working_dir=None):
-        self.progress_label.setText("Ejecutando GISPublisher...")
+        self.progress_label.setText("Running GISPublisher...")
         self.progress_label.setVisible(True)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
 
         if self.output_text:
             self.output_text.clear()
-            self.output_text.appendPlainText("> Iniciando GISPublisher...\n")
+            self.output_text.appendPlainText("> Starting GISPublisher...\n")
 
         self.process = QProcess()
         self.process.setProgram(gispub_path)
@@ -155,33 +155,33 @@ class GISPublisherRunner:
     
     def show_error_popup(self, message=None):
         if self.debug:
-            self.progress_label.setText("GISPublisher finalizó con errores ❌")
-            self.output_text.appendPlainText(f"\n> ERROR: {message or 'Fallo durante la ejecución'}")
+            self.progress_label.setText("GISPublisher finished with errors ❌")
+            self.output_text.appendPlainText(f"\n> ERROR: {message or 'Execution failed'}")
             return
-        
+
         msg_box = QMessageBox(self.parent)
         msg_box.setIcon(QMessageBox.Critical)
-        msg_box.setWindowTitle("Error en GISPublisher")
-        msg_box.setText("Ha ocurrido un error durante la ejecución de GISPublisher.")
+        msg_box.setWindowTitle("GISPublisher Error")
+        msg_box.setText("An error occurred during GISPublisher execution.")
         if message:
             msg_box.setInformativeText(message)
         msg_box.exec_()
 
     def show_success_popup(self):
         if self.debug:
-            self.progress_label.setText("GISPublisher finalizado ✅")
-            self.output_text.appendPlainText("\n> Proceso finalizado correctamente.")
+            self.progress_label.setText("GISPublisher finished ✅")
+            self.output_text.appendPlainText("\n> Process completed successfully.")
             return
-        
+
         msg_box = QMessageBox(self.parent)
         msg_box.setIcon(QMessageBox.Information)
-        msg_box.setWindowTitle("Proceso completado")
+        msg_box.setWindowTitle("Process completed")
 
         if self.generate:
-            msg_box.setText("El producto se ha generado correctamente.")
-            open_button = msg_box.addButton("Abrir carpeta", QMessageBox.ActionRole)
+            msg_box.setText("The application was generated successfully.")
+            open_button = msg_box.addButton("Open folder", QMessageBox.ActionRole)
         else:
-            msg_box.setText("El despliegue se ha completado correctamente.")
+            msg_box.setText("Deployment completed successfully.")
             open_button = None
 
         msg_box.addButton(QMessageBox.Ok)
@@ -197,14 +197,14 @@ class GISPublisherRunner:
         if exitCode == 0:
             self.progress_bar.setValue(100)
             self.progress_bar.setStyleSheet("")
-            self.progress_label.setText("GISPublisher finalizado ✅")
+            self.progress_label.setText("GISPublisher finished ✅")
             if self.output_text:
-                self.output_text.appendPlainText("\n> Proceso finalizado correctamente.")
+                self.output_text.appendPlainText("\n> Process completed successfully.")
             self.show_success_popup()
         else:
-            self.progress_label.setText("GISPublisher falló ❌")
+            self.progress_label.setText("GISPublisher failed ❌")
             if self.output_text:
-                self.output_text.appendPlainText(f"\n> Proceso finalizado con errores (código de salida {exitCode}).")
+                self.output_text.appendPlainText(f"\n> Process finished with errors (exit code {exitCode}).")
             self.show_error_popup()
 
         if self.finished_callback:
