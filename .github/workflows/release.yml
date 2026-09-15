@@ -19,9 +19,11 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Build plugin zip
-        run: bash package.sh
+        run: python package.py
 
       - name: Upload zip to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          name: "GISPublisher v${{ steps.meta.outputs.version }}"
+          body_path: CHANGELOG.md
           files: "GISPublisher_${{ steps.meta.outputs.version }}.zip"
