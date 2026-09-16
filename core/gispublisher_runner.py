@@ -1,8 +1,7 @@
 import os, re, struct, tempfile, pathlib, shutil, time, urllib.parse
-from PyQt5.QtCore import QProcess
-from PyQt5.QtWidgets import QMessageBox
-from PyQt5.QtGui import QDesktopServices
-from PyQt5.QtCore import QUrl
+from qgis.PyQt.QtCore import QProcess, QUrl
+from qgis.PyQt.QtWidgets import QMessageBox
+from qgis.PyQt.QtGui import QDesktopServices
 from qgis.core import QgsMapLayer
 from ..core.dependencies_checker import check_node_gispublisher
 from ..core import model_discovery
@@ -184,7 +183,7 @@ class GISPublisherRunner:
 
         for layer in self.layers:
             # Raster Layer
-            if layer.type() == QgsMapLayer.RasterLayer:
+            if layer.type() == QgsMapLayer.LayerType.RasterLayer:
                 source = layer.source()
                 # WMS layers include "url=" in their source string
                 if "url=" in source.lower():
@@ -315,7 +314,7 @@ class GISPublisherRunner:
 
     def cancel(self):
         """Kill the running GISPublisher process, if any."""
-        if self.process and self.process.state() != QProcess.NotRunning:
+        if self.process and self.process.state() != QProcess.ProcessState.NotRunning:
             self.cancelled = True
             self.process.kill()
 
@@ -350,12 +349,12 @@ class GISPublisherRunner:
             return
 
         msg_box = QMessageBox(self.parent)
-        msg_box.setIcon(QMessageBox.Critical)
+        msg_box.setIcon(QMessageBox.Icon.Critical)
         msg_box.setWindowTitle("GISPublisher Error")
         msg_box.setText("An error occurred during GISPublisher execution.")
         msg_box.setInformativeText(detail)
         msg_box.setDetailedText("\n".join(self.log_lines))
-        msg_box.exec_()
+        msg_box.exec()
 
     def show_success_popup(self):
         if self.debug:
@@ -364,12 +363,12 @@ class GISPublisherRunner:
             return
 
         msg_box = QMessageBox(self.parent)
-        msg_box.setIcon(QMessageBox.Information)
+        msg_box.setIcon(QMessageBox.Icon.Information)
         msg_box.setWindowTitle("Process completed")
 
         if self.generate:
             msg_box.setText("The application was generated successfully.")
-            open_button = msg_box.addButton("Open folder", QMessageBox.ActionRole)
+            open_button = msg_box.addButton("Open folder", QMessageBox.ButtonRole.ActionRole)
         else:
             text = "Deployment completed successfully."
             if self.resulting_host:
@@ -377,8 +376,8 @@ class GISPublisherRunner:
             msg_box.setText(text)
             open_button = None
 
-        msg_box.addButton(QMessageBox.Ok)
-        msg_box.exec_()
+        msg_box.addButton(QMessageBox.StandardButton.Ok)
+        msg_box.exec()
 
         if self.generate and msg_box.clickedButton() == open_button:
             QDesktopServices.openUrl(QUrl.fromLocalFile(self.output_dir))

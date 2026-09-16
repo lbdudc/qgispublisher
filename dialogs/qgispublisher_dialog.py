@@ -170,9 +170,9 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             return
 
         all_checked = all(
-            list_widget.item(i).checkState() == Qt.Checked for i in range(count)
+            list_widget.item(i).checkState() == Qt.CheckState.Checked for i in range(count)
         )
-        new_state = Qt.Unchecked if all_checked else Qt.Checked
+        new_state = Qt.CheckState.Unchecked if all_checked else Qt.CheckState.Checked
 
         for i in range(count):
             list_widget.item(i).setCheckState(new_state)
@@ -181,14 +181,14 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         return [
             list_widget.item(i).text()
             for i in range(list_widget.count())
-            if list_widget.item(i).checkState() == Qt.Checked
+            if list_widget.item(i).checkState() == Qt.CheckState.Checked
         ]
 
     def _checked_data(self, list_widget):
         return {
-            list_widget.item(i).data(Qt.UserRole)
+            list_widget.item(i).data(Qt.ItemDataRole.UserRole)
             for i in range(list_widget.count())
-            if list_widget.item(i).checkState() == Qt.Checked
+            if list_widget.item(i).checkState() == Qt.CheckState.Checked
         }
 
     def populate_file_list(self, list_widget, folder):
@@ -200,7 +200,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
 
         for name in entries:
             item = QListWidgetItem(name)
-            item.setCheckState(Qt.Checked)
+            item.setCheckState(Qt.CheckState.Checked)
             list_widget.addItem(item)
 
     # ------------------------------------------------------------------
@@ -219,15 +219,15 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         layers = project.mapLayers().values()
 
         for layer in layers:
-            if layer.type() not in (QgsMapLayer.VectorLayer, QgsMapLayer.RasterLayer):
+            if layer.type() not in (QgsMapLayer.LayerType.VectorLayer, QgsMapLayer.LayerType.RasterLayer):
                 continue
 
             item = QListWidgetItem(layer.name())
-            item.setData(Qt.UserRole, layer.id())
+            item.setData(Qt.ItemDataRole.UserRole, layer.id())
             if had_items:
-                item.setCheckState(Qt.Checked if layer.id() in previously_checked else Qt.Unchecked)
+                item.setCheckState(Qt.CheckState.Checked if layer.id() in previously_checked else Qt.CheckState.Unchecked)
             else:
-                item.setCheckState(Qt.Checked)
+                item.setCheckState(Qt.CheckState.Checked)
 
             self.layersList.addItem(item)
 
@@ -239,7 +239,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
 
     def update_selection_state(self):
         has_selected = any(
-            self.layersList.item(i).checkState() == Qt.Checked
+            self.layersList.item(i).checkState() == Qt.CheckState.Checked
             for i in range(self.layersList.count())
         )
         self.infoLabel.setVisible(not has_selected)
@@ -251,15 +251,15 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
 
         for i in range(self.layersList.count()):
             item = self.layersList.item(i)
-            if item.checkState() == Qt.Checked:
-                layer = project.mapLayer(item.data(Qt.UserRole))
+            if item.checkState() == Qt.CheckState.Checked:
+                layer = project.mapLayer(item.data(Qt.ItemDataRole.UserRole))
                 if layer:
                     selected_layers.append(layer)
 
         return selected_layers
 
     def get_selected_vector_layers(self):
-        return [l for l in self.get_selected_layers() if l.type() == QgsMapLayer.VectorLayer]
+        return [layer for layer in self.get_selected_layers() if layer.type() == QgsMapLayer.LayerType.VectorLayer]
 
     # ------------------------------------------------------------------
     # Charts
@@ -287,8 +287,8 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         vector_layers = self.get_selected_vector_layers()
         if not vector_layers:
             vector_layers = [
-                l for l in QgsProject.instance().mapLayers().values()
-                if l.type() == QgsMapLayer.VectorLayer
+                layer for layer in QgsProject.instance().mapLayers().values()
+                if layer.type() == QgsMapLayer.LayerType.VectorLayer
             ]
         if not vector_layers:
             QMessageBox.warning(
@@ -315,7 +315,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         dialog = ChartBuilderDialog(
             vector_layers, default_base_url, self.selected_chart_folder, existing_names, parent=self
         )
-        if dialog.exec_() == QDialog.Accepted and dialog.saved_chart_filename:
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.saved_chart_filename:
             if not self.selected_chart_folder:
                 self.selected_chart_folder = dialog.saved_chart_folder
                 self.chartFolderPathLabel.setText(self.selected_chart_folder)
@@ -324,7 +324,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             for i in range(self.chartFilesList.count()):
                 item = self.chartFilesList.item(i)
                 if item.text() == dialog.saved_chart_filename:
-                    item.setCheckState(Qt.Checked)
+                    item.setCheckState(Qt.CheckState.Checked)
 
     def _apply_chart_validation_icons(self):
         """Mark each chart file with a warning icon/tooltip when it looks like it
@@ -333,12 +333,12 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             return
 
         vector_layers = self.get_selected_vector_layers()
-        basenames = [naming.layer_source_basename(l) for l in vector_layers]
+        basenames = [naming.layer_source_basename(layer) for layer in vector_layers]
         fields_by_basename = {
-            naming.layer_source_basename(l): {naming.attribute_name(f.name()) for f in l.fields()}
-            for l in vector_layers
+            naming.layer_source_basename(layer): {naming.attribute_name(f.name()) for f in layer.fields()}
+            for layer in vector_layers
         }
-        warning_icon = self.style().standardIcon(QStyle.SP_MessageBoxWarning)
+        warning_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
 
         for i in range(self.chartFilesList.count()):
             item = self.chartFilesList.item(i)
@@ -368,17 +368,17 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         if not self.selected_chart_folder:
             return True
 
-        vector_layers = [l for l in selected_layers if l.type() == QgsMapLayer.VectorLayer]
-        basenames = [naming.layer_source_basename(l) for l in vector_layers]
+        vector_layers = [layer for layer in selected_layers if layer.type() == QgsMapLayer.LayerType.VectorLayer]
+        basenames = [naming.layer_source_basename(layer) for layer in vector_layers]
         fields_by_basename = {
-            naming.layer_source_basename(l): {naming.attribute_name(f.name()) for f in l.fields()}
-            for l in vector_layers
+            naming.layer_source_basename(layer): {naming.attribute_name(f.name()) for f in layer.fields()}
+            for layer in vector_layers
         }
 
         problems = []
         for i in range(self.chartFilesList.count()):
             item = self.chartFilesList.item(i)
-            if item.checkState() != Qt.Checked:
+            if item.checkState() != Qt.CheckState.Checked:
                 continue
             name = item.text()
             if not name.lower().endswith(".json"):
@@ -409,10 +409,10 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             "The following selected chart(s) look like they won't render correctly:\n\n"
             + "\n".join(lines)
             + "\n\nContinue anyway?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
-        return reply == QMessageBox.Yes
+        return reply == QMessageBox.StandardButton.Yes
 
     # ------------------------------------------------------------------
     # Models
@@ -428,13 +428,13 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self.modelFilesList.clear()
         for entry in entries:
             item = QListWidgetItem(f"{entry.display_name}  ({entry.source})")
-            item.setData(Qt.UserRole, entry.id)
+            item.setData(Qt.ItemDataRole.UserRole, entry.id)
             tooltip_parts = [p for p in (entry.parameter_summary(), entry.source_file_path) if p]
             item.setToolTip("\n".join(tooltip_parts))
             if had_items:
-                item.setCheckState(Qt.Checked if entry.id in previously_checked else Qt.Unchecked)
+                item.setCheckState(Qt.CheckState.Checked if entry.id in previously_checked else Qt.CheckState.Unchecked)
             else:
-                item.setCheckState(Qt.Checked)
+                item.setCheckState(Qt.CheckState.Checked)
             self.modelFilesList.addItem(item)
 
     def select_model_folder(self):
@@ -453,8 +453,8 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         selected = []
         for i in range(self.modelFilesList.count()):
             item = self.modelFilesList.item(i)
-            if item.checkState() == Qt.Checked:
-                entry = self._model_entries_by_id.get(item.data(Qt.UserRole))
+            if item.checkState() == Qt.CheckState.Checked:
+                entry = self._model_entries_by_id.get(item.data(Qt.ItemDataRole.UserRole))
                 if entry:
                     selected.append(entry)
         return selected
@@ -522,7 +522,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             self.sshCertRouteEdit: "Path to the private key (.pem) used to authenticate over SSH.",
             self.sshRemoteRepoPathEdit: "Absolute path on the remote server where the application will be deployed.",
             self.awsAccessKeyEdit: "AWS IAM access key ID with permission to launch EC2 instances.",
-            self.awsSecretAccessKeyEdit: "AWS IAM secret access key matching the access key above.",
+            self.awsSecretAccessKeyEdit: "AWS IAM secret access key matching the access key above.",  # pragma: allowlist secret
             self.awsRegionEdit: "AWS region code, e.g. eu-west-1.",
             self.awsAmiIdEdit: "ID of the Amazon Machine Image to launch, e.g. ami-0123456789abcdef0 (EC2 \u2192 AMI Catalog).",
             self.awsInstanceTypeEdit: "EC2 instance size, e.g. t2.micro (EC2 \u2192 Instance Types).",
@@ -540,30 +540,30 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         """Use native Qt standard icons instead of emoji for a consistent, platform-correct look."""
         style = self.style()
 
-        self.dataTabs.setTabIcon(0, style.standardIcon(QStyle.SP_DirIcon))
-        self.dataTabs.setTabIcon(1, style.standardIcon(QStyle.SP_FileDialogContentsView))
-        self.dataTabs.setTabIcon(2, style.standardIcon(QStyle.SP_FileDialogInfoView))
+        self.dataTabs.setTabIcon(0, style.standardIcon(QStyle.StandardPixmap.SP_DirIcon))
+        self.dataTabs.setTabIcon(1, style.standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView))
+        self.dataTabs.setTabIcon(2, style.standardIcon(QStyle.StandardPixmap.SP_FileDialogInfoView))
 
-        self.selectChartFolderButton.setIcon(style.standardIcon(QStyle.SP_DirOpenIcon))
-        self.selectModelFolderButton.setIcon(style.standardIcon(QStyle.SP_DirOpenIcon))
-        self.selectOutputFolderButton.setIcon(style.standardIcon(QStyle.SP_DirOpenIcon))
+        self.selectChartFolderButton.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
+        self.selectModelFolderButton.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
+        self.selectOutputFolderButton.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
 
-        self.clearChartFolderButton.setIcon(style.standardIcon(QStyle.SP_DialogResetButton))
-        self.clearModelFolderButton.setIcon(style.standardIcon(QStyle.SP_DialogResetButton))
-        self.refreshModelsButton.setIcon(style.standardIcon(QStyle.SP_BrowserReload))
+        self.clearChartFolderButton.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DialogResetButton))
+        self.clearModelFolderButton.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DialogResetButton))
+        self.refreshModelsButton.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
 
-        self.installGispubButton.setIcon(style.standardIcon(QStyle.SP_ArrowDown))
-        self.refreshStatusButton.setIcon(style.standardIcon(QStyle.SP_BrowserReload))
+        self.installGispubButton.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_ArrowDown))
+        self.refreshStatusButton.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
 
-        self.runButton.setIcon(style.standardIcon(QStyle.SP_MediaPlay))
-        self.cancelButton.setIcon(style.standardIcon(QStyle.SP_DialogCancelButton))
+        self.runButton.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.cancelButton.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DialogCancelButton))
 
     def add_browse_action(self, line_edit, dialog_title):
         """Add a clickable folder icon inside a QLineEdit to browse for a file."""
-        icon = self.style().standardIcon(QStyle.SP_DialogOpenButton)
+        icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton)
         action = QAction(icon, dialog_title, line_edit)
         action.triggered.connect(lambda: self.browse_for_file(line_edit, dialog_title))
-        line_edit.addAction(action, QLineEdit.TrailingPosition)
+        line_edit.addAction(action, QLineEdit.ActionPosition.TrailingPosition)
 
     def browse_for_file(self, line_edit, dialog_title):
         path, _ = QFileDialog.getOpenFileName(self, dialog_title, line_edit.text())
@@ -662,14 +662,14 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
                 summary += f"  → {record['host']}"
 
             item = QListWidgetItem(summary)
-            item.setData(Qt.UserRole, record)
+            item.setData(Qt.ItemDataRole.UserRole, record)
             self.historyList.addItem(item)
 
         self.update_history_buttons_state()
 
     def update_history_buttons_state(self):
         item = self.historyList.currentItem()
-        record = item.data(Qt.UserRole) if item else None
+        record = item.data(Qt.ItemDataRole.UserRole) if item else None
         self.historyOpenAppButton.setEnabled(bool(record and record.get("host")))
         self.historyRestoreButton.setEnabled(record is not None)
         self.historyViewLogButton.setEnabled(bool(record and record.get("log_tail")))
@@ -682,13 +682,13 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
 
     def on_history_open_app(self):
         item = self.historyList.currentItem()
-        record = item.data(Qt.UserRole) if item else None
+        record = item.data(Qt.ItemDataRole.UserRole) if item else None
         if record and record.get("host"):
             QDesktopServices.openUrl(QUrl(record["host"]))
 
     def on_history_restore(self):
         item = self.historyList.currentItem()
-        record = item.data(Qt.UserRole) if item else None
+        record = item.data(Qt.ItemDataRole.UserRole) if item else None
         if not record:
             return
 
@@ -720,7 +720,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
 
     def on_history_view_log(self):
         item = self.historyList.currentItem()
-        record = item.data(Qt.UserRole) if item else None
+        record = item.data(Qt.ItemDataRole.UserRole) if item else None
         if not record:
             return
 
@@ -728,7 +728,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         box.setWindowTitle("Deploy log")
         box.setText(f"{record.get('timestamp', '')} — {record.get('deploy_type', '')}")
         box.setDetailedText("\n".join(record.get("log_tail") or []) or "(no log captured)")
-        box.exec_()
+        box.exec()
 
     # ------------------------------------------------------------------
     # Persistence (per-project selection)
@@ -738,14 +738,14 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         project = QgsProject.instance()
         selection = {
             "layer_ids": [
-                self.layersList.item(i).data(Qt.UserRole)
+                self.layersList.item(i).data(Qt.ItemDataRole.UserRole)
                 for i in range(self.layersList.count())
-                if self.layersList.item(i).checkState() == Qt.Checked
+                if self.layersList.item(i).checkState() == Qt.CheckState.Checked
             ],
             "model_ids": [
-                self.modelFilesList.item(i).data(Qt.UserRole)
+                self.modelFilesList.item(i).data(Qt.ItemDataRole.UserRole)
                 for i in range(self.modelFilesList.count())
-                if self.modelFilesList.item(i).checkState() == Qt.Checked
+                if self.modelFilesList.item(i).checkState() == Qt.CheckState.Checked
             ],
             "chart_folder": self.selected_chart_folder or "",
             "chart_files": self.get_selected_chart_items(),
@@ -766,7 +766,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         layer_ids = set(selection["layer_ids"])
         for i in range(self.layersList.count()):
             item = self.layersList.item(i)
-            item.setCheckState(Qt.Checked if item.data(Qt.UserRole) in layer_ids else Qt.Unchecked)
+            item.setCheckState(Qt.CheckState.Checked if item.data(Qt.ItemDataRole.UserRole) in layer_ids else Qt.CheckState.Unchecked)
         self.update_selection_state()
 
         if selection["chart_folder"] and os.path.isdir(selection["chart_folder"]):
@@ -777,7 +777,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
                 chart_files = set(selection["chart_files"])
                 for i in range(self.chartFilesList.count()):
                     item = self.chartFilesList.item(i)
-                    item.setCheckState(Qt.Checked if item.text() in chart_files else Qt.Unchecked)
+                    item.setCheckState(Qt.CheckState.Checked if item.text() in chart_files else Qt.CheckState.Unchecked)
             self._apply_chart_validation_icons()
 
         if selection["model_folder"] and os.path.isdir(selection["model_folder"]):
@@ -788,7 +788,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         model_ids = set(selection["model_ids"])
         for i in range(self.modelFilesList.count()):
             item = self.modelFilesList.item(i)
-            item.setCheckState(Qt.Checked if item.data(Qt.UserRole) in model_ids else Qt.Unchecked)
+            item.setCheckState(Qt.CheckState.Checked if item.data(Qt.ItemDataRole.UserRole) in model_ids else Qt.CheckState.Unchecked)
 
         if selection["output_dir"] and os.path.isdir(selection["output_dir"]):
             self.output_dir = selection["output_dir"]

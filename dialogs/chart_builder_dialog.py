@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import tempfile
@@ -14,6 +15,8 @@ from ..core import chart_builder, chart_preview, naming
 FORM_CLASS, _ = uic.loadUiType(
     os.path.join(os.path.dirname(__file__), "ui", "chart_builder_dialog.ui")
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 _NUMERIC_TYPES = {
     QVariant.Int,
@@ -195,7 +198,7 @@ class ChartBuilderDialog(QDialog, FORM_CLASS):
                     row[naming.attribute_name(name)] = _json_safe(value)
                 rows.append(row)
         except Exception:
-            pass
+            _LOGGER.exception("Failed to build chart preview rows")
         return rows
 
     def _refresh_preview(self):
@@ -273,7 +276,7 @@ class ChartBuilderDialog(QDialog, FORM_CLASS):
                 "Overwrite chart?",
                 f'A chart named "{name}" already exists. Overwrite it?',
             )
-            if reply != QMessageBox.Yes:
+            if reply != QMessageBox.StandardButton.Yes:
                 return
 
         dest_folder = self.chart_folder or _default_chart_folder()
