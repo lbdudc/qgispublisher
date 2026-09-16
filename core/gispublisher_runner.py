@@ -1,5 +1,5 @@
 import os, tempfile, pathlib, shutil, urllib.parse
-from PyQt5.QtCore import QProcess, QTimer
+from PyQt5.QtCore import QProcess
 from PyQt5.QtWidgets import QMessageBox
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtCore import QUrl
@@ -24,9 +24,8 @@ class GISPublisherRunner:
         self.models_temp_dir = os.path.join(self.temp_dir, "models")
         os.makedirs(self.models_temp_dir, exist_ok=True)
         self.process = None
-        self.timer = None
-        self.fake_progress = 0
         self.debug = debug
+        self.cancelled = False
 
     def copy_layers_directly(self):
         wms_urls = []
@@ -109,7 +108,9 @@ class GISPublisherRunner:
         self.progress_label.setText("Running GISPublisher...")
         self.progress_label.setVisible(True)
         self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
+        # Real progress isn't reported by the GISPublisher CLI, so show a busy
+        # (indeterminate) bar instead of a fake, misleading percentage.
+        self.progress_bar.setRange(0, 0)
 
         if self.output_text:
             self.output_text.clear()
@@ -126,26 +127,19 @@ class GISPublisherRunner:
         self.process.readyReadStandardError.connect(self.handle_stderr)
         self.process.finished.connect(self.finished)
 
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.update_fake_progress)
-        self.timer.start(1000)
-
         self.process.start()
 
-    def update_fake_progress(self):
-        if self.fake_progress < 90:
-            self.fake_progress += 2
-            self.progress_bar.setValue(self.fake_progress)
-        else:
-            self.timer.stop()
+    def cancel(self):
+        """Kill the running GISPublisher process, if any."""
+        if self.process and self.process.state() != QProcess.NotRunning:
+            self.cancelled = True
+            self.process.kill()
 
     def handle_stdout(self):
         if self.output_text:
             text = bytes(self.process.readAllStandardOutput()).decode()
             if text.strip():
                 self.output_text.appendPlainText(text.rstrip())
-        if self.progress_bar:
-            self.progress_bar.setValue(min(self.progress_bar.value() + 1, 90))
 
     def handle_stderr(self):
         if self.output_text:
@@ -191,10 +185,14 @@ class GISPublisherRunner:
             QDesktopServices.openUrl(QUrl.fromLocalFile(self.output_dir))
 
     def finished(self, exitCode, exitStatus):
-        if self.timer:
-            self.timer.stop()
+        self.progress_bar.setRange(0, 100)
 
-        if exitCode == 0:
+        if self.cancelled:
+            self.progress_bar.setValue(0)
+            self.progress_label.setText("GISPublisher cancelled")
+            if self.output_text:
+                self.output_text.appendPlainText("\n> Process cancelled by user.")
+        elif exitCode == 0:
             self.progress_bar.setValue(100)
             self.progress_bar.setStyleSheet("")
             self.progress_label.setText("GISPublisher finished ✅")

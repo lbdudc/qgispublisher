@@ -105,26 +105,20 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             self.selected_chart_folder = folder
             self.chartFolderLabel.setWordWrap(True)
             self.chartFolderLabel.setText(f"Selected folder: {folder}")
-        else:
-            self.selected_chart_folder = None
-            self.chartFolderLabel.setText("")
-    
+
     def select_model_folder(self):
         folder = QFileDialog.getExistingDirectory(
             self,
             "Select models folder",
             ""
         )
- 
+
         if folder:
             self.selected_model_folder = folder
             self.modelFolderLabel.setWordWrap(True)
             self.modelFolderLabel.setText(f"Selected folder: {folder}")
-        else:
-            self.selected_model_folder = None
-            self.modelFolderLabel.setText("")
 
-    def open_generate_dialog(self):
+    def get_selected_layers(self):
         project = QgsProject.instance()
         selected_layers = []
 
@@ -136,10 +130,20 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
                 if layer:
                     selected_layers.append(layer)
 
+        return selected_layers
+
+    def open_generate_dialog(self):
+        selected_layers = self.get_selected_layers()
+
         if not selected_layers:
             return
 
         self.check_requirements_and_open(lambda: GenerateDialog(selected_layers, parent=self))
 
     def open_deploy_dialog(self):
-        self.check_requirements_and_open(lambda: DeployDialog(parent=self))
+        selected_layers = self.get_selected_layers()
+
+        if not selected_layers:
+            return
+
+        self.check_requirements_and_open(lambda: DeployDialog(selected_layers, parent=self))

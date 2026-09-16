@@ -15,10 +15,12 @@ This plugin integrates **[GISPublisher](https://gitlab.lbd.udc.es/GEMA/lps/gispu
 2. [Usage](#usage)
 3. [Data Visualizations with Vega](#data-visualizations-with-vega)
 4. [Geoprocessing Models](#geoprocessing-models)
-5. [Requirements](#requirements)
-6. [Contributing](#contributing)
-7. [Authors](#authors)
-8. [License](#license)
+5. [Deploying your application](#deploying-your-application)
+6. [Requirements](#requirements)
+7. [Troubleshooting](#troubleshooting)
+8. [Contributing](#contributing)
+9. [Authors](#authors)
+10. [License](#license)
 
 ## Installation
 
@@ -71,16 +73,78 @@ To create and export a model:
 3. Export it as a `.model3` file via **Model → Save Model to File**.
 4. Place the exported file in the `models` folder you will select in the plugin.
 
+## Deploying your application
+
+The **Deploy** button opens a dialog where you choose one of three deployment targets. All secret fields (AWS Secret Access Key) are masked, and any local file path field (private key, SSH key) has a folder-icon button to browse for the file instead of typing the path.
+
+### Local
+
+Runs the generated application on your own machine using Docker.
+
+| Field | Description |
+|-------|-------------|
+| Host  | URL the application will be served on, e.g. `http://localhost:80` |
+
+**Requires [Docker Desktop](https://www.docker.com/products/docker-desktop/) to be installed and running.** On Windows, the plugin automatically adds Docker's default install location to its PATH if found.
+
+### SSH
+
+Deploys to a remote server you control over SSH.
+
+| Field | Description |
+|-------|-------------|
+| Host | Remote server address |
+| Private key path | Path to the `.pem`/private key file used to authenticate |
+| Username | SSH username |
+| Port | SSH port (default `22`) |
+| Remote repository path | Absolute path on the remote server to deploy into |
+
+### AWS
+
+Provisions and deploys to a new AWS EC2 instance.
+
+| Field | Description |
+|-------|-------------|
+| Access key / Secret key | AWS IAM credentials with permission to launch EC2 instances |
+| Region | AWS region, e.g. `eu-west-1` |
+| AMI ID | Amazon Machine Image to launch, e.g. `ami-0123456789abcdef0` |
+| Instance type | EC2 instance type, e.g. `t2.micro` |
+| Instance name | Name tag for the created instance |
+| Security group ID | Existing security group to attach, e.g. `sg-0123456789abcdef0` |
+| Key pair | Name of an existing EC2 key pair |
+| SSH username / SSH key path | Credentials used to connect to the instance after it boots |
+| Remote repository path | Absolute path on the instance to deploy into |
+
+All fields are required for the selected deployment type; the plugin validates them before running and lists anything missing.
+
 ## Requirements
 
 - QGIS 3.x
 - Node.js 19+ ([download](https://nodejs.org/en/download))
 - GISPublisher: install via `npm install -g @lbdudc/gis-publisher`
 - At least one vector or raster layer loaded in QGIS
+- Docker Desktop, only if deploying to **Local**
 
 Optional:
 - A `charts` folder with valid Vega or Vega-Lite chart definitions
 - A `models` folder with QGIS geoprocessing model files (`.model3`)
+
+## Troubleshooting
+
+**"Node.js is not installed" even though it's installed.**
+QGIS on Windows sometimes starts with a restricted `PATH` that doesn't include Node.js, especially if Node was installed after QGIS or via a version manager (nvm, Scoop, Volta). Restart QGIS after installing Node.js; if the problem persists, add Node's install folder to your system `PATH` and restart QGIS again.
+
+**"npm not found" errors during install/deploy.**
+Same cause as above — npm ships alongside Node.js but isn't always resolved automatically inside QGIS's Python environment. Restarting QGIS after installing/updating Node.js resolves most cases.
+
+**Local deployment fails immediately.**
+Local deployment runs the generated app in Docker — make sure Docker Desktop is installed and running before clicking Deploy.
+
+**A layer isn't appearing in the layer list.**
+Only vector and raster layers currently loaded in the QGIS project are listed. WMS raster layers are supported but exported as a `urls.wms` reference file rather than copied locally.
+
+**Cancelling generation/deployment.**
+While a Generate or Deploy operation is running, click **Cancel** in the progress window to stop it. Partial output in the destination folder is not automatically cleaned up.
 
 ## Contributing
 

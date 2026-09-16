@@ -166,19 +166,3 @@ def find_gispublisher():
     raise Exception(
         "GISPublisher is not installed. Run: npm install -g @lbdudc/gis-publisher"
     )
-
-
-# ---------------------------------------------------------------------------
-# Backward-compatible aliases (used by requirements_dialog.py)
-# ---------------------------------------------------------------------------
-
-def find_node_windows():
-    return find_node()
-
-
-def find_npm_windows():
-    return find_npm()
-
-
-def find_gispublisher_windows():
-    return find_gispublisher()

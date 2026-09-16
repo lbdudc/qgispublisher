@@ -1,7 +1,6 @@
 import sys
 from PyQt5 import uic
-from PyQt5.QtWidgets import QDialog, QFileDialog, QMessageBox
-from qgis.core import QgsProject, QgsMapLayer
+from PyQt5.QtWidgets import QAction, QDialog, QFileDialog, QLineEdit, QMessageBox, QStyle
 import os, json, tempfile, pathlib, subprocess
 from ..core.gispublisher_runner import GISPublisherRunner
 from ..core.dependencies_checker import find_npm
@@ -16,20 +15,26 @@ DEPLOY_PROGRESS_FORM_CLASS, _ = uic.loadUiType(
 
 
 class DeployProgressDialog(QDialog, DEPLOY_PROGRESS_FORM_CLASS):
-    """Dialog that shows the progress of the deployment."""    
+    """Dialog that shows the progress of the deployment."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setupUi(self)
-        self.closeButton.setEnabled(False)
+        self.closeButton.setText("Cancel")
+
+    def set_finished_state(self):
+        """Switch the button from 'Cancel' (running) to 'Close' (done)."""
+        self.closeButton.setText("Close")
 
 class DeployDialog(QDialog, DEPLOY_FORM_CLASS):
     """Main deployment dialog: choose Local/SSH/AWS.""" 
 
     DEBUG = False
 
-    def __init__(self, parent=None):
+    def __init__(self, layers, parent=None):
         super().__init__(parent)
         self.setupUi(self)
+
+        self.layers = layers
 
         self.radioLocal.toggled.connect(self.update_stack)
         self.radioSSH.toggled.connect(self.update_stack)
@@ -38,7 +43,75 @@ class DeployDialog(QDialog, DEPLOY_FORM_CLASS):
         self.deployButton.clicked.connect(self.start_deploy)
         self.cancelButton.clicked.connect(self.close)
 
+        self.setup_field_helpers()
         self.update_stack()
+
+    def setup_field_helpers(self):
+        """Mask secrets, add browse actions for file paths, and add tooltips."""
+        self.awsSecretAccessKeyEdit.setEchoMode(QLineEdit.Password)
+
+        self.add_browse_action(self.sshCertRouteEdit, "Select private key file")
+        self.add_browse_action(self.awsSshKeyPathEdit, "Select SSH key file")
+
+        tooltips = {
+            self.sshCertRouteEdit: "Path to the private key (.pem) used to authenticate over SSH.",
+            self.sshRemoteRepoPathEdit: "Absolute path on the remote server where the application will be deployed.",
+            self.awsAmiIdEdit: "ID of the Amazon Machine Image used to launch the instance (e.g. ami-0123456789abcdef0).",
+            self.awsInstanceTypeEdit: "AWS EC2 instance type (e.g. t2.micro).",
+            self.awsSecurityGroupEdit: "ID of the AWS security group to attach to the instance (e.g. sg-0123456789abcdef0).",
+            self.awsKeyNameEdit: "Name of the EC2 key pair registered in AWS, used to launch the instance.",
+            self.awsSshKeyPathEdit: "Local path to the private key matching the selected AWS key pair.",
+            self.awsRemotePathEdit: "Absolute path on the remote instance where the application will be deployed.",
+        }
+        for widget, text in tooltips.items():
+            widget.setToolTip(text)
+
+    def add_browse_action(self, line_edit, dialog_title):
+        """Add a clickable folder icon inside a QLineEdit to browse for a file."""
+        icon = self.style().standardIcon(QStyle.SP_DialogOpenButton)
+        action = QAction(icon, dialog_title, line_edit)
+        action.triggered.connect(lambda: self.browse_for_file(line_edit, dialog_title))
+        line_edit.addAction(action, QLineEdit.TrailingPosition)
+
+    def browse_for_file(self, line_edit, dialog_title):
+        path, _ = QFileDialog.getOpenFileName(self, dialog_title, line_edit.text())
+        if path:
+            line_edit.setText(path)
+
+    def validate_fields(self):
+        """Return a list of missing required field labels for the selected deployment type."""
+        missing = []
+
+        if self.radioLocal.isChecked():
+            if not self.localHostEdit.text().strip():
+                missing.append("Host")
+
+        elif self.radioSSH.isChecked():
+            required = [
+                (self.sshHostEdit, "Host"),
+                (self.sshUsernameEdit, "Username"),
+                (self.sshCertRouteEdit, "Private key path"),
+                (self.sshRemoteRepoPathEdit, "Remote repository path"),
+            ]
+            missing.extend(label for widget, label in required if not widget.text().strip())
+
+        elif self.radioAWS.isChecked():
+            required = [
+                (self.awsAccessKeyEdit, "Access key"),
+                (self.awsSecretAccessKeyEdit, "Secret key"),
+                (self.awsRegionEdit, "Region"),
+                (self.awsAmiIdEdit, "AMI ID"),
+                (self.awsInstanceTypeEdit, "Instance type"),
+                (self.awsInstanceNameEdit, "Instance name"),
+                (self.awsSecurityGroupEdit, "Security group ID"),
+                (self.awsKeyNameEdit, "Key pair"),
+                (self.awsUsernameEdit, "SSH username"),
+                (self.awsSshKeyPathEdit, "SSH key path"),
+                (self.awsRemotePathEdit, "Remote repository path"),
+            ]
+            missing.extend(label for widget, label in required if not widget.text().strip())
+
+        return missing
 
     def update_stack(self):
         if self.radioLocal.isChecked():
@@ -125,16 +198,22 @@ class DeployDialog(QDialog, DEPLOY_FORM_CLASS):
         return temp_file.name
 
     def start_deploy(self):
-        layers = list(QgsProject.instance().mapLayers().values())
+        if not self.layers:
+            QMessageBox.warning(self, "Warning", "No layers selected to deploy.")
+            return
 
-        if not layers:
-            QMessageBox.warning(self, "Warning", "No layers available to deploy.")
+        missing = self.validate_fields()
+        if missing:
+            QMessageBox.warning(
+                self,
+                "Missing information",
+                "Please fill in the following required field(s):\n\n- " + "\n- ".join(missing),
+            )
             return
 
         try:
             progress_dialog = DeployProgressDialog(parent=None)
             progress_dialog.setModal(True)
-            progress_dialog.closeButton.clicked.connect(progress_dialog.close)
             progress_dialog.outputText.setVisible(self.DEBUG)
             progress_dialog.show()
 
@@ -146,7 +225,7 @@ class DeployDialog(QDialog, DEPLOY_FORM_CLASS):
                     os.environ["PATH"] += os.pathsep + docker_bin
 
             self.runner = GISPublisherRunner(
-                layers=layers,
+                layers=self.layers,
                 output_dir=None, 
                 chart_folder=getattr(self.parent(), "selected_chart_folder", None),
                 progress_label=progress_dialog.statusLabel,
@@ -154,14 +233,20 @@ class DeployDialog(QDialog, DEPLOY_FORM_CLASS):
                 output_text=progress_dialog.outputText if self.DEBUG else None,
                 parent=self,
                 debug=self.DEBUG,
-                finished_callback=lambda: (
-                    progress_dialog.close() if not self.DEBUG else None,  
-                    self.close(),      
-                    os.remove(config_path)
-                )
+                finished_callback=lambda: self.on_deploy_finished(progress_dialog, config_path)
             )
+            progress_dialog.closeButton.clicked.connect(self.runner.cancel)
             self.runner.start(config_path=config_path)
 
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
+
+    def on_deploy_finished(self, progress_dialog, config_path):
+        progress_dialog.set_finished_state()
+        progress_dialog.closeButton.clicked.disconnect()
+        progress_dialog.closeButton.clicked.connect(progress_dialog.close)
+        if not self.DEBUG:
+            progress_dialog.close()
+        self.close()
+        os.remove(config_path)
 

@@ -17,7 +17,11 @@ class GenerateProgressDialog(QDialog, PROGRESS_FORM_CLASS):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setupUi(self)
-        self.closeButton.setEnabled(False)
+        self.closeButton.setText("Cancel")
+
+    def set_finished_state(self):
+        """Switch the button from 'Cancel' (running) to 'Close' (done)."""
+        self.closeButton.setText("Close")
 
 
 class GenerateDialog(QDialog, FORM_CLASS):
@@ -59,11 +63,10 @@ class GenerateDialog(QDialog, FORM_CLASS):
 
         try:
             progress_dialog = GenerateProgressDialog(self)
-            progress_dialog.closeButton.clicked.connect(progress_dialog.close)
             progress_dialog.outputText.setVisible(self.DEBUG)
-            progress_dialog.show()  
+            progress_dialog.show()
 
-            self.close()          
+            self.close()
 
             self.runner = GISPublisherRunner(
                 layers=self.layers,
@@ -75,11 +78,17 @@ class GenerateDialog(QDialog, FORM_CLASS):
                 output_text=progress_dialog.outputText if self.DEBUG else None,
                 parent=self,
                 debug=self.DEBUG,
-                finished_callback=lambda: (
-                    progress_dialog.close() if not self.DEBUG else None,
-                    self.close()
-                )
+                finished_callback=lambda: self.on_generate_finished(progress_dialog)
             )
+            progress_dialog.closeButton.clicked.connect(self.runner.cancel)
             self.runner.start(generate=True)
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
+
+    def on_generate_finished(self, progress_dialog):
+        progress_dialog.set_finished_state()
+        progress_dialog.closeButton.clicked.disconnect()
+        progress_dialog.closeButton.clicked.connect(progress_dialog.close)
+        if not self.DEBUG:
+            progress_dialog.close()
+        self.close()
