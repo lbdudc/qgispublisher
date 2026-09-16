@@ -48,16 +48,15 @@ Alternatively, extract the zip contents into your QGIS plugins directory:
 ## Usage
 
 1. Open QGIS and locate the **GISPublisher** icon in the toolbar.
-2. Click the icon to launch the plugin.
-3. The plugin will check that **Node.js** and **GISPublisher** are installed. If any requirement is missing, it will guide you through the installation.
-4. Once requirements are met, a window will appear where you can:
-   - Select the layers from your current QGIS project to include in the generated application.
-   - Optionally, select a `charts` folder containing **Vega** or **Vega-Lite** charts.
-   - Optionally, select a `models` folder containing QGIS geoprocessing models (`.model3` files).
-5. Choose one of the following actions:
-   - **Generate**: Select a destination folder where the GIS application will be generated.
-   - **Deploy**: Open a deployment window to deploy the application to **local**, **SSH**, or **AWS** environments.
-6. A message box will confirm whether the action completed successfully or if an error occurred.
+2. Click the icon to launch the plugin. A window opens with a compact status line at the top (hover it for details on Node.js/GISPublisher detection; a small refresh button rechecks, and an "Install GISPublisher" button appears only if it's missing), then a two-pane layout below it:
+   - On the left, a tabbed panel switches between **Layers**, **Charts** and **Models**:
+     - **Layers** — choose which layers from your current QGIS project to include (all are selected by default; use "Select all" to toggle everything).
+     - **Charts** (optional) — select a folder of **Vega** or **Vega-Lite** chart definitions; once selected, its contents appear as a checkable list so you can include or exclude individual files.
+     - **Models** (optional) — select a folder of QGIS geoprocessing models (`.model3` files); its contents also appear as a checkable list.
+   - On the right, the **Action** panel: choose **Generate** or **Deploy**. Generate shows an output folder picker; Deploy shows the Local/SSH/AWS configuration described in [Deploying your application](#deploying-your-application).
+   - Drag the divider between the two panes to resize them.
+3. Click **Run** at the bottom of the window to start the selected action.
+4. A progress window opens showing the operation's status; you can cancel it while it's running. A message box confirms success, or shows the error, when it finishes.
 
 ## Data Visualizations with Vega
 
@@ -75,7 +74,7 @@ To create and export a model:
 
 ## Deploying your application
 
-The **Deploy** button opens a dialog where you choose one of three deployment targets. All secret fields (AWS Secret Access Key) are masked, and any local file path field (private key, SSH key) has a folder-icon button to browse for the file instead of typing the path.
+Selecting **Deploy** in the Action section lets you configure one of three deployment targets before clicking **Run**. All secret fields (AWS Secret Access Key) are masked, and any local file path field (private key, SSH key) has a folder-icon button to browse for the file instead of typing the path. Hover any field for a description of what it expects, and see the links next to the AWS fields for where to find those values in the AWS Console.
 
 ### Local
 

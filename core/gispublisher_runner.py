@@ -8,7 +8,7 @@ from ..core.dependencies_checker import check_node_gispublisher
 
 class GISPublisherRunner:
 
-    def __init__(self, layers, output_dir, progress_label, progress_bar, output_text, parent=None, finished_callback=None, chart_folder=None, model_folder=None, debug=False):
+    def __init__(self, layers, output_dir, progress_label, progress_bar, output_text, parent=None, finished_callback=None, chart_folder=None, chart_items=None, model_folder=None, model_items=None, debug=False):
         self.layers = layers
         self.output_dir = output_dir
         self.progress_label = progress_label
@@ -17,7 +17,10 @@ class GISPublisherRunner:
         self.parent = parent
         self.finished_callback = finished_callback
         self.chart_folder = chart_folder
+        # None means "include everything in the folder"; a list restricts to those names.
+        self.chart_items = chart_items
         self.model_folder = model_folder
+        self.model_items = model_items
         self.temp_dir = tempfile.mkdtemp(prefix="qgis_gispublisher_")
         self.charts_temp_dir = os.path.join(self.temp_dir, "charts")
         os.makedirs(self.charts_temp_dir, exist_ok=True)
@@ -63,6 +66,8 @@ class GISPublisherRunner:
     def copy_chart_folder(self):
         if self.chart_folder and os.path.exists(self.chart_folder):
             for item in os.listdir(self.chart_folder):
+                if self.chart_items is not None and item not in self.chart_items:
+                    continue
                 src_path = os.path.join(self.chart_folder, item)
                 dst_path = os.path.join(self.charts_temp_dir, item)
                 if os.path.isfile(src_path):
@@ -73,6 +78,8 @@ class GISPublisherRunner:
     def copy_model_folder(self):
         if self.model_folder and os.path.exists(self.model_folder):
             for item in os.listdir(self.model_folder):
+                if self.model_items is not None and item not in self.model_items:
+                    continue
                 src_path = os.path.join(self.model_folder, item)
                 dst_path = os.path.join(self.models_temp_dir, item)
                 if os.path.isfile(src_path) and src_path.endswith(".model3"):
