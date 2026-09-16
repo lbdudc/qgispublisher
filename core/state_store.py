@@ -45,18 +45,18 @@ def save_project_selection(project, selection):
     chart_folder (str), chart_files (list[str] or None), model_folder (str),
     output_dir (str), action ("generate"/"deploy"), deploy_type (str).
     """
-    project.writeEntryList(SCOPE, "layers", list(selection.get("layer_ids") or []))
-    project.writeEntryList(SCOPE, "models", list(selection.get("model_ids") or []))
+    project.writeEntry(SCOPE, "layers", list(selection.get("layer_ids") or []))
+    project.writeEntry(SCOPE, "models", list(selection.get("model_ids") or []))
     project.writeEntry(SCOPE, "chart_folder", selection.get("chart_folder") or "")
     chart_files = selection.get("chart_files")
     # None means "include everything in the folder" — store a sentinel so we can
     # distinguish that from an explicit empty selection on restore.
     if chart_files is None:
         project.writeEntry(SCOPE, "chart_files_all", True)
-        project.writeEntryList(SCOPE, "chart_files", [])
+        project.writeEntry(SCOPE, "chart_files", [])
     else:
         project.writeEntry(SCOPE, "chart_files_all", False)
-        project.writeEntryList(SCOPE, "chart_files", list(chart_files))
+        project.writeEntry(SCOPE, "chart_files", list(chart_files))
     project.writeEntry(SCOPE, "model_folder", selection.get("model_folder") or "")
     project.writeEntry(SCOPE, "output_dir", selection.get("output_dir") or "")
     project.writeEntry(SCOPE, "action", selection.get("action") or "generate")

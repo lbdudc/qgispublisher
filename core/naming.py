@@ -71,10 +71,72 @@ def attribute_name(field_name):
     """The entity attribute name derived from a DBF/attribute field name.
 
     dsl-util.js lowercases every field and renames a field literally called ``id`` to
-    ``id2``, since the entity's own identifier field already occupies ``id``.
+    ``id2``, since the entity's own identifier field already occupies ``id``. A field
+    name the generator's DSL grammar can't parse as an identifier (leading digit,
+    spaces, accents, punctuation — see ``is_valid_dsl_identifier``) is first run
+    through ``safe_field_name``, mirroring the rename gispublisher_runner applies to
+    the staged DBF before the CLI ever sees it, so this always matches what the
+    generator actually exposes.
     """
-    lowered = (field_name or "").lower()
+    lowered = safe_field_name(field_name).lower()
     return "id2" if lowered == "id" else lowered
+
+
+_VALID_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_NON_IDENTIFIER_CHARS = re.compile(r"[^A-Za-z0-9_]")
+
+# dBase/shapefile DBF field names are limited to 10 characters.
+DBF_FIELD_NAME_MAX_LENGTH = 10
+
+
+def is_valid_dsl_identifier(name):
+    """Whether `name` is already a valid identifier for the generator's DSL grammar
+    (letters/digits/underscore, not starting with a digit) — i.e. safe to send to
+    the CLI unchanged.
+    """
+    return bool(name) and bool(_VALID_IDENTIFIER_RE.match(name))
+
+
+def safe_field_name(field_name, max_length=DBF_FIELD_NAME_MAX_LENGTH):
+    """A DBF-safe, DSL-safe identifier for `field_name`, used to rename a field
+    before staging when it would otherwise break the generator's DSL parser (e.g.
+    "1er Apelli" -> ANTLR's "no viable alternative" on a leading digit and a space).
+
+    Returns `field_name` unchanged when it's already valid, so well-formed fields
+    keep their exact original name (and case) in the staged shapefile.
+    """
+    if is_valid_dsl_identifier(field_name):
+        return field_name
+    ascii_name = normalize_diacritics(field_name or "")
+    ascii_name = _NON_IDENTIFIER_CHARS.sub("", ascii_name)
+    if not ascii_name or ascii_name[0].isdigit():
+        ascii_name = "f" + ascii_name
+    return ascii_name[:max_length] or "field"
+
+
+def rename_map_for_fields(field_names, max_length=DBF_FIELD_NAME_MAX_LENGTH):
+    """``{original_name: staged_name}`` for the subset of `field_names` that need
+    fixing up before staging (see ``safe_field_name``), deduplicated against every
+    name in the layer (case-insensitively, matching DBF's own comparison) so a
+    rename can never collide with a sibling field. Names that are already valid are
+    left out entirely — callers should keep those as-is.
+    """
+    used = {(n or "").lower() for n in field_names}
+    renamed = {}
+    for name in field_names:
+        safe = safe_field_name(name, max_length)
+        if safe == name:
+            continue
+        candidate = safe
+        suffix = 1
+        while candidate.lower() in used and candidate.lower() != (name or "").lower():
+            tag = str(suffix)
+            candidate = safe[: max_length - len(tag)] + tag
+            suffix += 1
+        used.discard((name or "").lower())
+        used.add(candidate.lower())
+        renamed[name] = candidate
+    return renamed
 
 
 def normalize_diacritics(text):

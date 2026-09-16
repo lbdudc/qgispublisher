@@ -52,6 +52,37 @@ class NamingTests(unittest.TestCase):
         self.assertTrue(naming.starts_with_digit("0_wells"))
         self.assertFalse(naming.starts_with_digit("wells"))
 
+    def test_safe_field_name_leaves_valid_names_untouched(self):
+        self.assertEqual(naming.safe_field_name("Nombre"), "Nombre")
+        self.assertEqual(naming.safe_field_name("descriptio"), "descriptio")
+
+    def test_safe_field_name_fixes_leading_digit_and_spaces(self):
+        # DBF-truncated "1er Apellido" — the exact field that broke the DSL parser.
+        self.assertEqual(naming.safe_field_name("1er Apelli"), "f1erApelli")
+        self.assertTrue(naming.is_valid_dsl_identifier(naming.safe_field_name("1er Apelli")))
+        self.assertLessEqual(len(naming.safe_field_name("1er Apelli")), 10)
+
+    def test_safe_field_name_strips_accents_and_punctuation(self):
+        result = naming.safe_field_name("2º Apelli")
+        self.assertTrue(naming.is_valid_dsl_identifier(result))
+
+    def test_attribute_name_matches_safe_field_name_pipeline(self):
+        # attribute_name must reflect the same rename the runner stages, since the
+        # CLI derives the entity attribute from whatever field name it actually reads.
+        self.assertEqual(naming.attribute_name("1er Apelli"), naming.safe_field_name("1er Apelli").lower())
+
+    def test_rename_map_only_includes_changed_fields(self):
+        fields = ["fid", "Name", "1er Apelli", "descriptio"]
+        renamed = naming.rename_map_for_fields(fields)
+        self.assertEqual(set(renamed.keys()), {"1er Apelli"})
+        self.assertEqual(renamed["1er Apelli"], "f1erApelli")
+
+    def test_rename_map_deduplicates_collisions(self):
+        fields = ["1a", "-1a"]
+        renamed = naming.rename_map_for_fields(fields)
+        self.assertEqual(len(renamed), 2)
+        self.assertNotEqual(renamed["1a"], renamed["-1a"])
+
     def test_layer_source_basename_from_path(self):
         class FakeLayer:
             def source(self):

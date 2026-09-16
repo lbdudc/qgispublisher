@@ -1,4 +1,4 @@
-import os, re, tempfile, pathlib, shutil, time, urllib.parse
+import os, re, struct, tempfile, pathlib, shutil, time, urllib.parse
 from PyQt5.QtCore import QProcess
 from PyQt5.QtWidgets import QMessageBox
 from PyQt5.QtGui import QDesktopServices
@@ -6,6 +6,7 @@ from PyQt5.QtCore import QUrl
 from qgis.core import QgsMapLayer
 from ..core.dependencies_checker import check_node_gispublisher
 from ..core import model_discovery
+from ..core import naming
 
 # Staging dirs created under the OS temp dir per run; never cleaned up automatically
 # by the OS, so the plugin sweeps stale ones on its own (see cleanup_old_temp_dirs).
@@ -76,6 +77,78 @@ def _export_sld(layer, dest_path):
     return False, message or "style export failed"
 
 
+def _rewrite_dbf_field_names(dbf_path, field_names, rename_map):
+    """Patch a staged shapefile's DBF field-name bytes in place per `rename_map`
+    (original name -> new name, both <= naming.DBF_FIELD_NAME_MAX_LENGTH ASCII
+    chars). Only the 11-byte name slot of each field descriptor is touched — types,
+    lengths and data stay untouched — so this only ever changes how the generator's
+    DSL parser sees the field, never the underlying data.
+
+    `field_names` is `layer.fields()`'s original (QGIS-decoded) names, in order —
+    descriptors are matched by *position* against it rather than by re-decoding each
+    descriptor's raw name bytes and comparing strings. A field whose name QGIS
+    decoded correctly (e.g. via its .cpg) can be stored on disk in an encoding that
+    doesn't round-trip through a fixed guess like latin-1 (that mismatch is exactly
+    why some field names are broken in the first place), so a byte-decode-and-compare
+    lookup silently misses precisely the fields we need to fix. If the DBF doesn't
+    have exactly as many field descriptors as `field_names`, nothing is written —
+    safer to skip the rename than guess at alignment.
+    """
+    if not rename_map:
+        return
+    with open(dbf_path, "r+b") as f:
+        header = f.read(32)
+        header_size = struct.unpack("<H", header[8:10])[0]
+        descriptor_offsets = []
+        offset = 32
+        while offset < header_size - 1:
+            f.seek(offset)
+            descriptor = f.read(32)
+            if len(descriptor) < 32 or descriptor[0] == 0x0D:
+                break
+            descriptor_offsets.append(offset)
+            offset += 32
+
+        if len(descriptor_offsets) != len(field_names):
+            return
+
+        for offset, name in zip(descriptor_offsets, field_names):
+            new_name = rename_map.get(name)
+            if new_name:
+                name_bytes = new_name.encode("ascii")[:10].ljust(11, b"\x00")
+                f.seek(offset)
+                f.write(name_bytes)
+
+
+def _rewrite_sld_field_references(sld_path, rename_map):
+    """QGIS bakes the *original* field name into an exported SLD's PropertyName
+    elements. When a field got renamed for the staged DBF (see
+    _rewrite_dbf_field_names), the SLD needs the same substitution — otherwise
+    generation succeeds but the resulting style silently fails to match any rule
+    that referenced the renamed field.
+    """
+    if not rename_map or not os.path.isfile(sld_path):
+        return
+    try:
+        with open(sld_path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return
+
+    changed = False
+    for old, new in rename_map.items():
+        for tag in ("PropertyName", "ogc:PropertyName", "se:PropertyName"):
+            marker = f"<{tag}>{old}</{tag}>"
+            replacement = f"<{tag}>{new}</{tag}>"
+            if marker in text:
+                text = text.replace(marker, replacement)
+                changed = True
+
+    if changed:
+        with open(sld_path, "w", encoding="utf-8") as f:
+            f.write(text)
+
+
 class GISPublisherRunner:
 
     def __init__(self, layers, output_dir, progress_label, progress_bar, output_text, parent=None, finished_callback=None, chart_folder=None, chart_items=None, model_entries=None, debug=False):
@@ -137,9 +210,20 @@ class GISPublisherRunner:
                     copied = True
 
             if copied:
+                # Fields the generator's DSL parser can't handle as-is (leading
+                # digit, spaces, accents — e.g. a DBF-truncated "1er Apelli") get
+                # renamed in the staged copy only; the source project is untouched.
+                field_names = [f.name() for f in layer.fields()]
+                rename_map = naming.rename_map_for_fields(field_names)
+                staged_dbf = os.path.join(self.temp_dir, base.name + ".dbf")
+                if rename_map and os.path.isfile(staged_dbf):
+                    _rewrite_dbf_field_names(staged_dbf, field_names, rename_map)
+
                 dest_sld = os.path.join(self.temp_dir, base.name + ".sld")
                 ok, message = _export_sld(layer, dest_sld)
                 self.sld_results.append((layer.name(), ok, message))
+                if ok and rename_map:
+                    _rewrite_sld_field_references(dest_sld, rename_map)
 
         if wms_urls:
             wms_file = os.path.join(self.temp_dir, "urls.wms")
