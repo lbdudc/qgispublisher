@@ -29,6 +29,7 @@ rsync -a \
   --exclude='*.zip' \
   --exclude="${ARCHIVE}" \
   --exclude='package.sh' \
+  --exclude='tests' \
   . "${DEST}/"
 
 # Create zip

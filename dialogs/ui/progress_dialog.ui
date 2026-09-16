@@ -50,6 +50,13 @@
    <item>
     <layout class="QHBoxLayout" name="buttonLayout">
      <item>
+      <widget class="QCheckBox" name="showLogCheckBox">
+       <property name="text">
+        <string>Show log</string>
+       </property>
+      </widget>
+     </item>
+     <item>
       <spacer name="horizontalSpacer">
        <property name="orientation">
         <enum>Qt::Horizontal</enum>

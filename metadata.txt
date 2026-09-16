@@ -1,13 +1,13 @@
 [general]
 name=GISPublisher
 description=Generate and deploy interactive GIS web applications directly from QGIS layers.
-about=GISPublisher Plugin integrates the GISPublisher tool into QGIS, allowing you to generate and deploy interactive GIS web applications directly from the layers loaded in your QGIS project. Select vector or raster layers, optionally include Vega/Vega-Lite charts and QGIS geoprocessing models (.model3), then generate a complete web app or deploy it to local, SSH, or AWS environments - all without leaving QGIS.
+about=GISPublisher Plugin integrates the GISPublisher tool into QGIS, allowing you to generate and deploy interactive GIS web applications directly from the layers loaded in your QGIS project. Select vector or raster layers, build or attach Vega/Vega-Lite charts, and include QGIS geoprocessing models discovered automatically from your project and profile, then generate a complete web app or deploy it to local, SSH, or AWS environments - all without leaving QGIS. Layer/chart/model selections and deploy history are remembered between sessions.
 
   External dependencies (must be installed before use):
   - Node.js 19 or later (https://nodejs.org/en/download)
   - GISPublisher npm package: npm install -g @lbdudc/gis-publisher
 
-version=0.1.1
+version=0.2.0
 qgisMinimumVersion=3.0
 qgisMaximumVersion=3.99
 
@@ -18,7 +18,7 @@ homepage=https://github.com/lbdudc/qgispublisher
 repository=https://github.com/lbdudc/qgispublisher
 tracker=https://github.com/lbdudc/qgispublisher/issues
 
-tags=web,publish,gis,generate,deploy,shapefile,wms,vega,charts,geoprocessing
+tags=web,publish,gis,generate,deploy,shapefile,wms,vega,charts,geoprocessing,sld,styling,models
 category=Web
 icon=icons/qgispublisher.svg
 

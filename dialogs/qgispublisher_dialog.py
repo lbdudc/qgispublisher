@@ -3,7 +3,8 @@ import subprocess
 import sys
 
 from qgis.PyQt import uic
-from qgis.PyQt.QtCore import Qt, QThread, pyqtSignal
+from qgis.PyQt.QtCore import Qt, QThread, QUrl, pyqtSignal
+from qgis.PyQt.QtGui import QDesktopServices, QIcon
 from qgis.PyQt.QtWidgets import (
     QAction,
     QDialog,
@@ -16,9 +17,11 @@ from qgis.PyQt.QtWidgets import (
 from qgis.core import QgsProject, QgsMapLayer
 
 from .progress_dialog import ProgressDialog
+from .chart_builder_dialog import ChartBuilderDialog
 from ..core.dependencies_checker import find_node, find_gispublisher, find_npm
 from ..core.deploy_config import build_deploy_config
-from ..core.gispublisher_runner import GISPublisherRunner
+from ..core.gispublisher_runner import GISPublisherRunner, cleanup_old_temp_dirs
+from ..core import model_discovery, state_store, chart_builder, naming
 
 FORM_CLASS, _ = uic.loadUiType(
     os.path.join(os.path.dirname(__file__), "ui", "gispublisher_dialog.ui")
@@ -30,6 +33,27 @@ ACTION_PAGE_DEPLOY = 1
 DEPLOY_PAGE_LOCAL = 0
 DEPLOY_PAGE_SSH = 1
 DEPLOY_PAGE_AWS = 2
+
+# Deploy-form field -> widget, per deploy type, used to restore non-secret fields
+# from deploy history. Credential/host-identity fields (AWS keys, SSH username/key
+# paths) are never stored in history, so they're never restored either.
+_RESTORE_FIELD_WIDGETS = {
+    "local": lambda self: {"host": self.localHostEdit},
+    "ssh": lambda self: {
+        "host": self.sshHostEdit,
+        "port": self.sshPortEdit,
+        "remote_repo_path": self.sshRemoteRepoPathEdit,
+    },
+    "aws": lambda self: {
+        "region": self.awsRegionEdit,
+        "ami_id": self.awsAmiIdEdit,
+        "instance_type": self.awsInstanceTypeEdit,
+        "instance_name": self.awsInstanceNameEdit,
+        "security_group": self.awsSecurityGroupEdit,
+        "key_name": self.awsKeyNameEdit,
+        "remote_path": self.awsRemotePathEdit,
+    },
+}
 
 
 class InstallGisPublisherThread(QThread):
@@ -71,14 +95,19 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self.output_dir = None
         self._node_result = None
         self._gispub_path = None
+        self._model_entries_by_id = {}
+
+        cleanup_old_temp_dirs()
 
         self.selectAllButton.clicked.connect(self.on_select_all_layers)
         self.layersList.itemChanged.connect(self.update_selection_state)
 
+        self.newChartButton.clicked.connect(self.open_chart_builder)
         self.selectChartFolderButton.clicked.connect(self.select_chart_folder)
         self.clearChartFolderButton.clicked.connect(self.clear_chart_folder)
         self.selectAllChartsButton.clicked.connect(lambda: self.toggle_all_checked(self.chartFilesList))
 
+        self.refreshModelsButton.clicked.connect(self.refresh_models_list)
         self.selectModelFolderButton.clicked.connect(self.select_model_folder)
         self.clearModelFolderButton.clicked.connect(self.clear_model_folder)
         self.selectAllModelsButton.clicked.connect(lambda: self.toggle_all_checked(self.modelFilesList))
@@ -90,6 +119,12 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self.radioLocal.toggled.connect(self.update_deploy_stack)
         self.radioSSH.toggled.connect(self.update_deploy_stack)
         self.radioAWS.toggled.connect(self.update_deploy_stack)
+
+        self.historyList.itemSelectionChanged.connect(self.update_history_buttons_state)
+        self.historyOpenAppButton.clicked.connect(self.on_history_open_app)
+        self.historyRestoreButton.clicked.connect(self.on_history_restore)
+        self.historyViewLogButton.clicked.connect(self.on_history_view_log)
+        self.historyGroup.toggled.connect(self.on_history_group_toggled)
 
         self.installGispubButton.clicked.connect(self.install_gispublisher)
         self.refreshStatusButton.clicked.connect(self.check_requirements)
@@ -106,8 +141,24 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
 
         QgsProject.instance().layersAdded.connect(self.load_layers)
         QgsProject.instance().layersRemoved.connect(self.load_layers)
+        QgsProject.instance().readProject.connect(self.on_project_read)
+
         self.load_layers()
+        self.refresh_models_list()
+        self.load_history()
+        self.restore_selection_from_project()
         self.check_requirements()
+
+    def on_project_read(self):
+        """A different (or the same) project was opened — reload everything that's
+        project-scoped: layers, project-embedded models, and the saved selection."""
+        self.load_layers()
+        self.refresh_models_list()
+        self.restore_selection_from_project()
+
+    def closeEvent(self, event):
+        self.save_current_selection()
+        super().closeEvent(event)
 
     # ------------------------------------------------------------------
     # Generic checkable-list helpers (layers / chart files / model files)
@@ -133,6 +184,13 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             if list_widget.item(i).checkState() == Qt.Checked
         ]
 
+    def _checked_data(self, list_widget):
+        return {
+            list_widget.item(i).data(Qt.UserRole)
+            for i in range(list_widget.count())
+            if list_widget.item(i).checkState() == Qt.Checked
+        }
+
     def populate_file_list(self, list_widget, folder):
         list_widget.clear()
         try:
@@ -150,6 +208,11 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
     # ------------------------------------------------------------------
 
     def load_layers(self):
+        # Preserve the user's check state across a live layersAdded/layersRemoved
+        # refresh instead of resetting everything back to "all checked".
+        had_items = self.layersList.count() > 0
+        previously_checked = self._checked_data(self.layersList)
+
         self.layersList.clear()
 
         project = QgsProject.instance()
@@ -161,7 +224,10 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
 
             item = QListWidgetItem(layer.name())
             item.setData(Qt.UserRole, layer.id())
-            item.setCheckState(Qt.Checked)
+            if had_items:
+                item.setCheckState(Qt.Checked if layer.id() in previously_checked else Qt.Unchecked)
+            else:
+                item.setCheckState(Qt.Checked)
 
             self.layersList.addItem(item)
 
@@ -177,6 +243,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             for i in range(self.layersList.count())
         )
         self.infoLabel.setVisible(not has_selected)
+        self._apply_chart_validation_icons()
 
     def get_selected_layers(self):
         project = QgsProject.instance()
@@ -191,8 +258,11 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
 
         return selected_layers
 
+    def get_selected_vector_layers(self):
+        return [l for l in self.get_selected_layers() if l.type() == QgsMapLayer.VectorLayer]
+
     # ------------------------------------------------------------------
-    # Charts / models folders
+    # Charts
     # ------------------------------------------------------------------
 
     def select_chart_folder(self):
@@ -201,6 +271,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             self.selected_chart_folder = folder
             self.chartFolderPathLabel.setText(folder)
             self.populate_file_list(self.chartFilesList, folder)
+            self._apply_chart_validation_icons()
 
     def clear_chart_folder(self):
         self.selected_chart_folder = None
@@ -212,22 +283,181 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             return None
         return self.get_checked_texts(self.chartFilesList)
 
+    def open_chart_builder(self):
+        vector_layers = self.get_selected_vector_layers()
+        if not vector_layers:
+            vector_layers = [
+                l for l in QgsProject.instance().mapLayers().values()
+                if l.type() == QgsMapLayer.VectorLayer
+            ]
+        if not vector_layers:
+            QMessageBox.warning(
+                self, "No vector layers",
+                "Add a vector layer to the project before building a chart.",
+            )
+            return
+
+        default_base_url = "http://localhost:8080"
+        if self.radioDeploy.isChecked():
+            if self.radioLocal.isChecked() and self.localHostEdit.text().strip():
+                default_base_url = self.localHostEdit.text().strip()
+            elif self.radioSSH.isChecked() and self.sshHostEdit.text().strip():
+                default_base_url = self.sshHostEdit.text().strip()
+
+        existing_names = set()
+        if self.selected_chart_folder and os.path.isdir(self.selected_chart_folder):
+            existing_names = {
+                os.path.splitext(n)[0]
+                for n in os.listdir(self.selected_chart_folder)
+                if n.lower().endswith(".json")
+            }
+
+        dialog = ChartBuilderDialog(
+            vector_layers, default_base_url, self.selected_chart_folder, existing_names, parent=self
+        )
+        if dialog.exec_() == QDialog.Accepted and dialog.saved_chart_filename:
+            if not self.selected_chart_folder:
+                self.selected_chart_folder = dialog.saved_chart_folder
+                self.chartFolderPathLabel.setText(self.selected_chart_folder)
+            self.populate_file_list(self.chartFilesList, self.selected_chart_folder)
+            self._apply_chart_validation_icons()
+            for i in range(self.chartFilesList.count()):
+                item = self.chartFilesList.item(i)
+                if item.text() == dialog.saved_chart_filename:
+                    item.setCheckState(Qt.Checked)
+
+    def _apply_chart_validation_icons(self):
+        """Mark each chart file with a warning icon/tooltip when it looks like it
+        won't render against the currently selected layers."""
+        if not self.selected_chart_folder or self.chartFilesList.count() == 0:
+            return
+
+        vector_layers = self.get_selected_vector_layers()
+        basenames = [naming.layer_source_basename(l) for l in vector_layers]
+        fields_by_basename = {
+            naming.layer_source_basename(l): {naming.attribute_name(f.name()) for f in l.fields()}
+            for l in vector_layers
+        }
+        warning_icon = self.style().standardIcon(QStyle.SP_MessageBoxWarning)
+
+        for i in range(self.chartFilesList.count()):
+            item = self.chartFilesList.item(i)
+            name = item.text()
+            if not name.lower().endswith(".json"):
+                continue
+            path = os.path.join(self.selected_chart_folder, name)
+            if not os.path.isfile(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    raw_text = f.read()
+            except OSError:
+                continue
+
+            issues = chart_builder.validate_chart_spec(raw_text, basenames, fields_by_basename)
+            if issues:
+                item.setIcon(warning_icon)
+                item.setToolTip("\n".join(issues))
+            else:
+                item.setIcon(QIcon())
+                item.setToolTip("")
+
+    def _validate_checked_charts(self, selected_layers):
+        """Blocking (confirm-to-proceed) check run before Generate/Deploy: warns
+        about any *checked* chart file that looks like it won't render correctly."""
+        if not self.selected_chart_folder:
+            return True
+
+        vector_layers = [l for l in selected_layers if l.type() == QgsMapLayer.VectorLayer]
+        basenames = [naming.layer_source_basename(l) for l in vector_layers]
+        fields_by_basename = {
+            naming.layer_source_basename(l): {naming.attribute_name(f.name()) for f in l.fields()}
+            for l in vector_layers
+        }
+
+        problems = []
+        for i in range(self.chartFilesList.count()):
+            item = self.chartFilesList.item(i)
+            if item.checkState() != Qt.Checked:
+                continue
+            name = item.text()
+            if not name.lower().endswith(".json"):
+                continue
+            path = os.path.join(self.selected_chart_folder, name)
+            if not os.path.isfile(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    raw_text = f.read()
+            except OSError:
+                continue
+            issues = chart_builder.validate_chart_spec(raw_text, basenames, fields_by_basename)
+            if issues:
+                problems.append((name, issues))
+
+        if not problems:
+            return True
+
+        lines = []
+        for name, issues in problems:
+            lines.append(f"{name}:")
+            lines.extend(f"    - {issue}" for issue in issues)
+
+        reply = QMessageBox.warning(
+            self,
+            "Chart validation issues",
+            "The following selected chart(s) look like they won't render correctly:\n\n"
+            + "\n".join(lines)
+            + "\n\nContinue anyway?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return reply == QMessageBox.Yes
+
+    # ------------------------------------------------------------------
+    # Models
+    # ------------------------------------------------------------------
+
+    def refresh_models_list(self):
+        had_items = self.modelFilesList.count() > 0
+        previously_checked = self._checked_data(self.modelFilesList)
+
+        entries = model_discovery.discover_all_models(extra_folder=self.selected_model_folder)
+        self._model_entries_by_id = {entry.id: entry for entry in entries}
+
+        self.modelFilesList.clear()
+        for entry in entries:
+            item = QListWidgetItem(f"{entry.display_name}  ({entry.source})")
+            item.setData(Qt.UserRole, entry.id)
+            tooltip_parts = [p for p in (entry.parameter_summary(), entry.source_file_path) if p]
+            item.setToolTip("\n".join(tooltip_parts))
+            if had_items:
+                item.setCheckState(Qt.Checked if entry.id in previously_checked else Qt.Unchecked)
+            else:
+                item.setCheckState(Qt.Checked)
+            self.modelFilesList.addItem(item)
+
     def select_model_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select models folder", "")
+        folder = QFileDialog.getExistingDirectory(self, "Select extra models folder", "")
         if folder:
             self.selected_model_folder = folder
             self.modelFolderPathLabel.setText(folder)
-            self.populate_file_list(self.modelFilesList, folder)
+            self.refresh_models_list()
 
     def clear_model_folder(self):
         self.selected_model_folder = None
-        self.modelFolderPathLabel.setText("No folder selected")
-        self.modelFilesList.clear()
+        self.modelFolderPathLabel.setText("No extra folder selected")
+        self.refresh_models_list()
 
-    def get_selected_model_items(self):
-        if not self.selected_model_folder:
-            return None
-        return self.get_checked_texts(self.modelFilesList)
+    def get_selected_model_entries(self):
+        selected = []
+        for i in range(self.modelFilesList.count()):
+            item = self.modelFilesList.item(i)
+            if item.checkState() == Qt.Checked:
+                entry = self._model_entries_by_id.get(item.data(Qt.UserRole))
+                if entry:
+                    selected.append(entry)
+        return selected
 
     # ------------------------------------------------------------------
     # Action (Generate / Deploy) switching
@@ -320,6 +550,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
 
         self.clearChartFolderButton.setIcon(style.standardIcon(QStyle.SP_DialogResetButton))
         self.clearModelFolderButton.setIcon(style.standardIcon(QStyle.SP_DialogResetButton))
+        self.refreshModelsButton.setIcon(style.standardIcon(QStyle.SP_BrowserReload))
 
         self.installGispubButton.setIcon(style.standardIcon(QStyle.SP_ArrowDown))
         self.refreshStatusButton.setIcon(style.standardIcon(QStyle.SP_BrowserReload))
@@ -417,6 +648,162 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         return deploy_type, fields
 
     # ------------------------------------------------------------------
+    # Deploy history
+    # ------------------------------------------------------------------
+
+    def load_history(self):
+        self.historyList.clear()
+        records = state_store.load_deploy_history()
+        for record in reversed(records):  # most recent first
+            summary = f"{record.get('timestamp', '')}  [{record.get('deploy_type', '')}]"
+            exit_code = record.get("exit_code")
+            summary += "  ✔" if exit_code == 0 else f"  ✖ (exit {exit_code})"
+            if record.get("host"):
+                summary += f"  → {record['host']}"
+
+            item = QListWidgetItem(summary)
+            item.setData(Qt.UserRole, record)
+            self.historyList.addItem(item)
+
+        self.update_history_buttons_state()
+
+    def update_history_buttons_state(self):
+        item = self.historyList.currentItem()
+        record = item.data(Qt.UserRole) if item else None
+        self.historyOpenAppButton.setEnabled(bool(record and record.get("host")))
+        self.historyRestoreButton.setEnabled(record is not None)
+        self.historyViewLogButton.setEnabled(bool(record and record.get("log_tail")))
+
+    def on_history_group_toggled(self, checked):
+        self.historyList.setVisible(checked)
+        self.historyOpenAppButton.setVisible(checked)
+        self.historyRestoreButton.setVisible(checked)
+        self.historyViewLogButton.setVisible(checked)
+
+    def on_history_open_app(self):
+        item = self.historyList.currentItem()
+        record = item.data(Qt.UserRole) if item else None
+        if record and record.get("host"):
+            QDesktopServices.openUrl(QUrl(record["host"]))
+
+    def on_history_restore(self):
+        item = self.historyList.currentItem()
+        record = item.data(Qt.UserRole) if item else None
+        if not record:
+            return
+
+        deploy_type = record.get("deploy_type", "local")
+        self.radioDeploy.setChecked(True)
+        {"local": self.radioLocal, "ssh": self.radioSSH, "aws": self.radioAWS}.get(
+            deploy_type, self.radioLocal
+        ).setChecked(True)
+
+        widgets = _RESTORE_FIELD_WIDGETS.get(deploy_type, lambda self: {})(self)
+        for key, widget in widgets.items():
+            value = record.get("restorable_fields", {}).get(key)
+            if value is None:
+                continue
+            if hasattr(widget, "setValue"):
+                try:
+                    widget.setValue(int(value))
+                except (TypeError, ValueError):
+                    pass
+            else:
+                widget.setText(str(value))
+
+        QMessageBox.information(
+            self,
+            "Settings restored",
+            "Non-secret deploy fields were restored from this run. "
+            "Credentials and key paths are never stored — please re-enter them.",
+        )
+
+    def on_history_view_log(self):
+        item = self.historyList.currentItem()
+        record = item.data(Qt.UserRole) if item else None
+        if not record:
+            return
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Deploy log")
+        box.setText(f"{record.get('timestamp', '')} — {record.get('deploy_type', '')}")
+        box.setDetailedText("\n".join(record.get("log_tail") or []) or "(no log captured)")
+        box.exec_()
+
+    # ------------------------------------------------------------------
+    # Persistence (per-project selection)
+    # ------------------------------------------------------------------
+
+    def save_current_selection(self):
+        project = QgsProject.instance()
+        selection = {
+            "layer_ids": [
+                self.layersList.item(i).data(Qt.UserRole)
+                for i in range(self.layersList.count())
+                if self.layersList.item(i).checkState() == Qt.Checked
+            ],
+            "model_ids": [
+                self.modelFilesList.item(i).data(Qt.UserRole)
+                for i in range(self.modelFilesList.count())
+                if self.modelFilesList.item(i).checkState() == Qt.Checked
+            ],
+            "chart_folder": self.selected_chart_folder or "",
+            "chart_files": self.get_selected_chart_items(),
+            "model_folder": self.selected_model_folder or "",
+            "output_dir": self.output_dir or "",
+            "action": "deploy" if self.radioDeploy.isChecked() else "generate",
+            "deploy_type": self.current_deploy_type(),
+        }
+        state_store.save_project_selection(project, selection)
+
+    def restore_selection_from_project(self):
+        project = QgsProject.instance()
+        if not state_store.has_saved_selection(project):
+            return  # nothing saved yet — keep the "everything selected" default
+
+        selection = state_store.load_project_selection(project)
+
+        layer_ids = set(selection["layer_ids"])
+        for i in range(self.layersList.count()):
+            item = self.layersList.item(i)
+            item.setCheckState(Qt.Checked if item.data(Qt.UserRole) in layer_ids else Qt.Unchecked)
+        self.update_selection_state()
+
+        if selection["chart_folder"] and os.path.isdir(selection["chart_folder"]):
+            self.selected_chart_folder = selection["chart_folder"]
+            self.chartFolderPathLabel.setText(self.selected_chart_folder)
+            self.populate_file_list(self.chartFilesList, self.selected_chart_folder)
+            if selection["chart_files"] is not None:
+                chart_files = set(selection["chart_files"])
+                for i in range(self.chartFilesList.count()):
+                    item = self.chartFilesList.item(i)
+                    item.setCheckState(Qt.Checked if item.text() in chart_files else Qt.Unchecked)
+            self._apply_chart_validation_icons()
+
+        if selection["model_folder"] and os.path.isdir(selection["model_folder"]):
+            self.selected_model_folder = selection["model_folder"]
+            self.modelFolderPathLabel.setText(self.selected_model_folder)
+            self.refresh_models_list()
+
+        model_ids = set(selection["model_ids"])
+        for i in range(self.modelFilesList.count()):
+            item = self.modelFilesList.item(i)
+            item.setCheckState(Qt.Checked if item.data(Qt.UserRole) in model_ids else Qt.Unchecked)
+
+        if selection["output_dir"] and os.path.isdir(selection["output_dir"]):
+            self.output_dir = selection["output_dir"]
+            self.outputFolderLabel.setStyleSheet("")
+            self.outputFolderLabel.setText(self.output_dir)
+
+        self.radioDeploy.setChecked(selection["action"] == "deploy")
+        self.radioGenerate.setChecked(selection["action"] != "deploy")
+
+        deploy_type = selection.get("deploy_type", "local")
+        {"local": self.radioLocal, "ssh": self.radioSSH, "aws": self.radioAWS}.get(
+            deploy_type, self.radioLocal
+        ).setChecked(True)
+
+    # ------------------------------------------------------------------
     # Requirements / status
     # ------------------------------------------------------------------
 
@@ -498,6 +885,11 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             )
             return
 
+        if not self._validate_checked_charts(selected_layers):
+            return
+
+        self.save_current_selection()
+
         if self.radioGenerate.isChecked():
             self.run_generate(selected_layers)
         else:
@@ -509,7 +901,6 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             return
 
         progress_dialog = ProgressDialog(title="Generating...", parent=self)
-        progress_dialog.outputText.setVisible(self.DEBUG)
         progress_dialog.show()
 
         self.runner = GISPublisherRunner(
@@ -517,11 +908,10 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             output_dir=self.output_dir,
             chart_folder=self.selected_chart_folder,
             chart_items=self.get_selected_chart_items(),
-            model_folder=self.selected_model_folder,
-            model_items=self.get_selected_model_items(),
+            model_entries=self.get_selected_model_entries(),
             progress_label=progress_dialog.statusLabel,
             progress_bar=progress_dialog.progressBar,
-            output_text=progress_dialog.outputText if self.DEBUG else None,
+            output_text=progress_dialog.outputText,
             parent=self,
             debug=self.DEBUG,
             finished_callback=lambda: self.on_generate_finished(progress_dialog),
@@ -565,7 +955,6 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
                 os.environ["PATH"] += os.pathsep + docker_bin
 
         progress_dialog = ProgressDialog(title="Deploying...", parent=self)
-        progress_dialog.outputText.setVisible(self.DEBUG)
         progress_dialog.show()
 
         self.runner = GISPublisherRunner(
@@ -573,14 +962,15 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             output_dir=None,
             chart_folder=self.selected_chart_folder,
             chart_items=self.get_selected_chart_items(),
-            model_folder=self.selected_model_folder,
-            model_items=self.get_selected_model_items(),
+            model_entries=self.get_selected_model_entries(),
             progress_label=progress_dialog.statusLabel,
             progress_bar=progress_dialog.progressBar,
-            output_text=progress_dialog.outputText if self.DEBUG else None,
+            output_text=progress_dialog.outputText,
             parent=self,
             debug=self.DEBUG,
-            finished_callback=lambda: self.on_deploy_finished(progress_dialog, config_path),
+            finished_callback=lambda: self.on_deploy_finished(
+                progress_dialog, config_path, deploy_type, fields, len(selected_layers)
+            ),
         )
         progress_dialog.closeButton.clicked.connect(self.runner.cancel)
 
@@ -591,10 +981,28 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             os.remove(config_path)
             QMessageBox.critical(self, "Error", str(e))
 
-    def on_deploy_finished(self, progress_dialog, config_path):
+    def on_deploy_finished(self, progress_dialog, config_path, deploy_type, fields, layer_count):
         progress_dialog.set_finished_state()
         progress_dialog.closeButton.clicked.disconnect()
         progress_dialog.closeButton.clicked.connect(progress_dialog.close)
         if not self.DEBUG:
             progress_dialog.close()
         os.remove(config_path)
+
+        chart_count = len(self.get_selected_chart_items() or [])
+        model_count = len(self.get_selected_model_entries())
+        project = QgsProject.instance()
+
+        state_store.append_deploy_record(
+            project_title=project.title() or project.baseName(),
+            deploy_type=deploy_type,
+            host=self.runner.resulting_host or fields.get("host", ""),
+            layer_count=layer_count,
+            chart_count=chart_count,
+            model_count=model_count,
+            exit_code=getattr(self.runner, "exit_code", -1),
+            duration_seconds=self.runner.duration_seconds(),
+            log_lines=self.runner.log_lines,
+            deploy_fields=fields,
+        )
+        self.load_history()

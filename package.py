@@ -16,7 +16,7 @@ PLUGIN_NAME = "GISPublisher"
 
 EXCLUDE_NAMES = {
     ".git", ".gitignore", ".github", ".claude",
-    "__pycache__", "package.sh", "package.py",
+    "__pycache__", "package.sh", "package.py", "tests",
 }
 
 EXCLUDE_SUFFIXES = {".pyc", ".pyo", ".zip"}

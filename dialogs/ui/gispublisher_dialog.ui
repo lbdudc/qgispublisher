@@ -166,10 +166,20 @@
         <item>
          <widget class="QLabel" name="chartsExplanationLabel">
           <property name="text">
-           <string>Attach custom Vega or Vega-Lite chart definitions (.json) to the generated application. Optional.</string>
+           <string>Attach Vega or Vega-Lite chart definitions (.json) to the generated application. Build one from a layer's fields, or select a folder of hand-authored ones. Optional.</string>
           </property>
           <property name="wordWrap">
            <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="newChartButton">
+          <property name="toolTip">
+           <string>Build a chart from a layer's fields, with a live preview</string>
+          </property>
+          <property name="text">
+           <string>New chart…</string>
           </property>
          </widget>
         </item>
@@ -267,38 +277,7 @@
         <item>
          <widget class="QLabel" name="modelsExplanationLabel">
           <property name="text">
-           <string>Include custom QGIS geoprocessing models (.model3) in the generated application. Optional.</string>
-          </property>
-          <property name="wordWrap">
-           <bool>true</bool>
-          </property>
-         </widget>
-        </item>
-        <item>
-         <layout class="QHBoxLayout" name="modelsFolderLayout">
-          <item>
-           <widget class="QPushButton" name="selectModelFolderButton">
-            <property name="text">
-             <string>Select folder…</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QPushButton" name="clearModelFolderButton">
-            <property name="text">
-             <string>Clear</string>
-            </property>
-           </widget>
-          </item>
-         </layout>
-        </item>
-        <item>
-         <widget class="QLabel" name="modelFolderPathLabel">
-          <property name="styleSheet">
-           <string notr="true">color: #666666;</string>
-          </property>
-          <property name="text">
-           <string>No folder selected</string>
+           <string>Geoprocessing models saved in this project or in your QGIS profile are listed automatically. Optional.</string>
           </property>
           <property name="wordWrap">
            <bool>true</bool>
@@ -310,7 +289,7 @@
           <item>
            <widget class="QLabel" name="modelsFilesLabel">
             <property name="text">
-             <string>Files to include:</string>
+             <string>Models to include:</string>
             </property>
            </widget>
           </item>
@@ -326,6 +305,22 @@
              </size>
             </property>
            </spacer>
+          </item>
+          <item>
+           <widget class="QPushButton" name="refreshModelsButton">
+            <property name="maximumSize">
+             <size>
+              <width>28</width>
+              <height>28</height>
+             </size>
+            </property>
+            <property name="toolTip">
+             <string>Rescan project and profile for models</string>
+            </property>
+            <property name="text">
+             <string/>
+            </property>
+           </widget>
           </item>
           <item>
            <widget class="QPushButton" name="selectAllModelsButton">
@@ -355,6 +350,40 @@
           </property>
           <property name="selectionMode">
            <enum>QAbstractItemView::NoSelection</enum>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" name="modelsFolderLayout">
+          <item>
+           <widget class="QPushButton" name="selectModelFolderButton">
+            <property name="toolTip">
+             <string>Add models from an extra folder outside the project and profile (e.g. shared on a network drive)</string>
+            </property>
+            <property name="text">
+             <string>Add folder…</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="clearModelFolderButton">
+            <property name="text">
+             <string>Clear</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <widget class="QLabel" name="modelFolderPathLabel">
+          <property name="styleSheet">
+           <string notr="true">color: #666666;</string>
+          </property>
+          <property name="text">
+           <string>No extra folder selected</string>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
           </property>
          </widget>
         </item>
@@ -805,6 +834,87 @@
                </item>
               </layout>
              </widget>
+            </widget>
+           </item>
+           <item>
+            <widget class="QGroupBox" name="historyGroup">
+             <property name="title">
+              <string>History</string>
+             </property>
+             <property name="checkable">
+              <bool>true</bool>
+             </property>
+             <property name="checked">
+              <bool>true</bool>
+             </property>
+             <layout class="QVBoxLayout" name="historyGroupLayout">
+              <item>
+               <widget class="QListWidget" name="historyList">
+                <property name="sizePolicy">
+                 <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+                  <horstretch>0</horstretch>
+                  <verstretch>1</verstretch>
+                 </sizepolicy>
+                </property>
+                <property name="minimumSize">
+                 <size>
+                  <width>0</width>
+                  <height>90</height>
+                 </size>
+                </property>
+                <property name="toolTip">
+                 <string>Past Deploy runs from this QGIS profile, most recent first</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <layout class="QHBoxLayout" name="historyButtonsLayout">
+                <item>
+                 <widget class="QPushButton" name="historyOpenAppButton">
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="text">
+                   <string>Open app</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="historyRestoreButton">
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="text">
+                   <string>Restore settings</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="historyViewLogButton">
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="text">
+                   <string>View log</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <spacer name="historyButtonsSpacer">
+                  <property name="orientation">
+                   <enum>Qt::Horizontal</enum>
+                  </property>
+                  <property name="sizeHint" stdset="0">
+                   <size>
+                    <width>40</width>
+                    <height>20</height>
+                   </size>
+                  </property>
+                 </spacer>
+                </item>
+               </layout>
+              </item>
+             </layout>
             </widget>
            </item>
           </layout>
