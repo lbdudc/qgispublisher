@@ -56,6 +56,92 @@ class BuildChartSpecTests(unittest.TestCase):
         # Original spec is untouched.
         self.assertIn("url", spec["data"][0])
 
+    def test_heatmap_requires_color(self):
+        with self.assertRaises(ValueError):
+            chart_builder.build_chart_spec(
+                chart_builder.CHART_TYPE_HEATMAP, "layer", "http://localhost:8080", "x", "y"
+            )
+
+    def test_grouped_bar_requires_color(self):
+        with self.assertRaises(ValueError):
+            chart_builder.build_chart_spec(
+                chart_builder.CHART_TYPE_GROUPED_BAR, "layer", "http://localhost:8080", "x", "y"
+            )
+
+    def test_stacked_bar_requires_color(self):
+        with self.assertRaises(ValueError):
+            chart_builder.build_chart_spec(
+                chart_builder.CHART_TYPE_STACKED_BAR, "layer", "http://localhost:8080", "x", "y"
+            )
+
+    def test_heatmap_measure_is_color_not_y(self):
+        spec = chart_builder.build_chart_spec(
+            chart_builder.CHART_TYPE_HEATMAP, "layer", "http://localhost:8080", "x", "y", "measure"
+        )
+        transform = spec["data"][0]["transform"][0]
+        self.assertEqual(transform["fields"], ["measure"])
+
+    def test_bar_without_color_uses_flat_fill(self):
+        spec = chart_builder.build_chart_spec(
+            chart_builder.CHART_TYPE_BAR, "layer", "http://localhost:8080", "x", "y"
+        )
+        fill = spec["marks"][0]["encode"]["update"]["fill"]
+        self.assertEqual(fill, {"value": "steelblue"})
+        self.assertNotIn("legends", spec)
+
+    def test_bar_with_color_gets_color_scale_and_legend(self):
+        spec = chart_builder.build_chart_spec(
+            chart_builder.CHART_TYPE_BAR, "layer", "http://localhost:8080", "x", "y", "group"
+        )
+        fill = spec["marks"][0]["encode"]["update"]["fill"]
+        self.assertEqual(fill, {"scale": "color", "field": "group"})
+        self.assertIn("legends", spec)
+        color_scale = next(s for s in spec["scales"] if s["name"] == "color")
+        self.assertEqual(color_scale["domain"]["field"], "group")
+
+    def test_line_without_color_is_single_series(self):
+        spec = chart_builder.build_chart_spec(
+            chart_builder.CHART_TYPE_LINE, "layer", "http://localhost:8080", "x", "y"
+        )
+        self.assertEqual(spec["marks"][0]["type"], "line")
+        self.assertNotIn("legends", spec)
+
+    def test_line_with_color_facets_into_series(self):
+        spec = chart_builder.build_chart_spec(
+            chart_builder.CHART_TYPE_LINE, "layer", "http://localhost:8080", "x", "y", "region"
+        )
+        group_mark = spec["marks"][0]
+        self.assertEqual(group_mark["type"], "group")
+        self.assertEqual(group_mark["from"]["facet"]["groupby"], ["region"])
+        nested_types = {m["type"] for m in group_mark["marks"]}
+        self.assertEqual(nested_types, {"line", "symbol"})
+        self.assertIn("legends", spec)
+
+    def test_area_with_color_facets_into_series(self):
+        spec = chart_builder.build_chart_spec(
+            chart_builder.CHART_TYPE_AREA, "layer", "http://localhost:8080", "x", "y", "region"
+        )
+        group_mark = spec["marks"][0]
+        self.assertEqual(group_mark["type"], "group")
+        self.assertEqual(group_mark["from"]["facet"]["groupby"], ["region"])
+
+    def test_scatter_defaults_to_linear_axes(self):
+        spec = chart_builder.build_chart_spec(
+            chart_builder.CHART_TYPE_SCATTER, "layer", "http://localhost:8080", "x", "y"
+        )
+        scales = {s["name"]: s for s in spec["scales"]}
+        self.assertEqual(scales["x"]["type"], "linear")
+        self.assertEqual(scales["y"]["type"], "linear")
+
+    def test_scatter_uses_point_scale_for_categorical_field(self):
+        spec = chart_builder.build_chart_spec(
+            chart_builder.CHART_TYPE_SCATTER, "layer", "http://localhost:8080", "category", "value",
+            field_types={"category": "categorical", "value": "numeric"},
+        )
+        scales = {s["name"]: s for s in spec["scales"]}
+        self.assertEqual(scales["x"]["type"], "point")
+        self.assertEqual(scales["y"]["type"], "linear")
+
 
 class ValidateChartSpecTests(unittest.TestCase):
     def test_valid_spec_has_no_issues(self):
@@ -95,15 +181,17 @@ class ValidateChartSpecTests(unittest.TestCase):
         self.assertTrue(any("doesn't match any selected layer" in i for i in issues))
 
     def test_unknown_field_is_flagged(self):
+        # "bogus" is <=10 chars and already a valid DSL identifier, so
+        # naming.attribute_name leaves it unchanged and it's easy to assert on.
         spec = chart_builder.build_chart_spec(
-            chart_builder.CHART_TYPE_BAR, "municipios", "http://localhost:8080", "nonexistent_field", "poblacion"
+            chart_builder.CHART_TYPE_BAR, "municipios", "http://localhost:8080", "bogus", "poblacion"
         )
         issues = chart_builder.validate_chart_spec(
             json.dumps(spec),
             ["municipios"],
-            {"municipios": {"poblacion"}},  # nonexistent_field isn't in here
+            {"municipios": {"poblacion"}},  # bogus isn't in here
         )
-        self.assertTrue(any("nonexistent_field" in i for i in issues))
+        self.assertTrue(any("bogus" in i for i in issues))
 
 
 if __name__ == "__main__":

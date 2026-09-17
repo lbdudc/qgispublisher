@@ -1,0 +1,8 @@
+# Minimal, correctness-only rule set for CI: syntax errors and pyflakes (unused
+# imports/names, undefined names, etc). Deliberately not the broader default
+# selection some ruff versions ship — this plugin's Qt callback code relies on
+# blanket `except Exception:` at integration boundaries (subprocess/QGIS binding
+# calls whose exact exception type varies by platform/version), which style rules
+# like flake8-bandit/tryceratops would flag as findings rather than bugs.
+[lint]
+select = ["E9", "F"]

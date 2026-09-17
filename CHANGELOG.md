@@ -2,7 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.3.0] - 2026-09-17
+
+### Added
+- **Every vector layer is now published, not just shapefiles.** GeoPackage, PostGIS and memory/scratch layers are exported to shapefile during staging (through QGIS's own writer) instead of being silently skipped, so their data, attributes and SLD styling all reach the generated app. Reprojection to a consistent target CRS happens as part of the same export.
+- **Chart color fields now do something.** Bar, line and area charts accept an optional color field to render a colored/multi-series chart (grouped lines or areas, tinted bars) with a legend, instead of silently ignoring it.
+- A `ci.yml` GitHub Actions workflow runs the QGIS-free unit test suite and a lint pass on every push and pull request.
+
+### Fixed
+- Two layers that would have staged under the same basename (e.g. same-named layers from different folders, or same-named tables from one GeoPackage) no longer silently overwrite each other — collisions are detected and deduplicated.
+- Grouped bar, stacked bar and heatmap charts no longer silently degrade into a meaningless chart (grouping a field by itself, or aggregating the wrong field) when no color field is given — building one without it is now a clear error instead.
+- The scatter plot no longer renders as empty/NaN points when a categorical field is used for an axis.
+- A non-UTF-8 byte in the GISPublisher CLI's output no longer crashes the run.
+- SLD style rewriting after a field rename now uses real XML parsing, so an attribute-form or whitespaced `PropertyName` is no longer missed.
+- A field name that's a valid identifier but too long for a DBF field slot (only reachable from a non-shapefile source) is now correctly renamed instead of silently mismatching the generated app's actual field name.
 
 ## [0.2.0]
 

@@ -103,6 +103,44 @@ class NamingTests(unittest.TestCase):
 
         self.assertEqual(naming.layer_source_basename(FakeLayer()), "fallback name")
 
+    def test_layer_source_basename_prefers_layername_over_container_file(self):
+        # Two GeoPackage layers from the same .gpkg must not both propose "data".
+        class FakeLayer:
+            def source(self):
+                return "/data/data.gpkg|layername=roads"
+
+            def name(self):
+                return "Roads"
+
+        self.assertEqual(naming.layer_source_basename(FakeLayer()), "roads")
+
+    def test_safe_field_name_truncates_overlong_valid_identifier(self):
+        # Valid per is_valid_dsl_identifier but too long for a DBF field slot — only
+        # reachable via a non-shapefile source (GeoPackage/PostGIS have no 10-char cap).
+        result = naming.safe_field_name("descriptionLong")
+        self.assertTrue(naming.is_valid_dsl_identifier(result))
+        self.assertLessEqual(len(result), 10)
+        self.assertNotEqual(result, "descriptionLong")
+
+    def test_rename_map_includes_overlong_valid_identifiers(self):
+        fields = ["descriptionLong", "name"]
+        renamed = naming.rename_map_for_fields(fields)
+        self.assertIn("descriptionLong", renamed)
+        self.assertNotIn("name", renamed)
+
+    def test_staged_basename_no_collision(self):
+        self.assertEqual(naming.staged_basename("roads", set()), "roads")
+
+    def test_staged_basename_dedupes_case_insensitively(self):
+        self.assertEqual(naming.staged_basename("Roads", {"roads"}), "Roads_2")
+        self.assertEqual(naming.staged_basename("roads", {"roads", "roads_2"}), "roads_3")
+
+    def test_assign_staged_basenames_dedupes_in_order(self):
+        result = naming.assign_staged_basenames([
+            ("a", "data"), ("b", "data"), ("c", "roads"),
+        ])
+        self.assertEqual(result, {"a": "data", "b": "data_2", "c": "roads"})
+
 
 if __name__ == "__main__":
     unittest.main()

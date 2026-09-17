@@ -18,6 +18,7 @@ generated application actually exposes:
 import os
 import re
 import unicodedata
+import urllib.parse
 
 _NON_ALNUM_RUN = re.compile(r"[^a-zA-Z0-9]+(.)")
 
@@ -102,10 +103,14 @@ def safe_field_name(field_name, max_length=DBF_FIELD_NAME_MAX_LENGTH):
     before staging when it would otherwise break the generator's DSL parser (e.g.
     "1er Apelli" -> ANTLR's "no viable alternative" on a leading digit and a space).
 
-    Returns `field_name` unchanged when it's already valid, so well-formed fields
-    keep their exact original name (and case) in the staged shapefile.
+    Returns `field_name` unchanged when it's already valid *and* already fits
+    `max_length`, so well-formed fields keep their exact original name (and case) in
+    the staged shapefile. A field name can be a perfectly valid DSL identifier and
+    still be too long for a DBF field slot — this only happens for a layer exported
+    from a source with no such limit (GeoPackage, PostGIS), since a field read
+    straight from an existing shapefile can never violate the DBF limit itself.
     """
-    if is_valid_dsl_identifier(field_name):
+    if is_valid_dsl_identifier(field_name) and len(field_name) <= max_length:
         return field_name
     ascii_name = normalize_diacritics(field_name or "")
     ascii_name = _NON_IDENTIFIER_CHARS.sub("", ascii_name)
@@ -147,21 +152,73 @@ def normalize_diacritics(text):
     return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
 
 
-def layer_source_basename(layer):
-    """The basename gispublisher_runner.py stages a vector layer's shapefile
-    sidecars under, which is what the generator derives entity names from.
+_LAYERNAME_URI_RE = re.compile(r"[?&|]layername=([^|&]+)", re.IGNORECASE)
 
-    Usually the same as ``layer.name()``, but not guaranteed (e.g. after a QGIS-side
-    rename with the source file left untouched), so callers that need to predict the
-    generator's entity name (chart building/validation) should prefer this over
-    ``layer.name()``.
+
+def preferred_basename_from_source(name, source):
+    """Pure core of ``layer_source_basename`` — takes the layer's plain name/source
+    strings instead of a QGIS layer object, so callers building a
+    ``core.layer_export.LayerDescriptor`` (no QGIS import) can call this directly.
+
+    Prefers an embedded ``layername=`` (present on GeoPackage/PostGIS-style URIs and
+    far more descriptive than the container file's own name — without this, every
+    layer from the same .gpkg would otherwise propose the same basename), then the
+    source file's own basename (the shapefile case), then the QGIS layer name.
+
+    This is a *preferred* name only, not guaranteed collision-free — see
+    ``assign_staged_basenames``.
     """
     try:
-        source = layer.source().split("|")[0]
-        basename = os.path.splitext(os.path.basename(source))[0]
-        return basename or layer.name()
+        source = source or ""
+        m = _LAYERNAME_URI_RE.search(source)
+        if m:
+            return urllib.parse.unquote(m.group(1))
+        path = source.split("|")[0].split("?")[0]
+        basename = os.path.splitext(os.path.basename(path))[0]
+        return basename or name
+    except Exception:
+        return name
+
+
+def layer_source_basename(layer):
+    """``preferred_basename_from_source`` for a live QGIS layer object."""
+    try:
+        return preferred_basename_from_source(layer.name(), layer.source())
     except Exception:
         return layer.name()
+
+
+def staged_basename(preferred, used_basenames):
+    """A filesystem-safe basename for `preferred` that doesn't collide (compared
+    case-insensitively, matching Windows filesystems and DBF's own field-name
+    comparison) with anything in `used_basenames`. Does not mutate `used_basenames` —
+    callers should add the returned name before resolving the next candidate.
+    """
+    candidate = preferred or "layer"
+    used_lower = {u.lower() for u in used_basenames}
+    if candidate.lower() not in used_lower:
+        return candidate
+    suffix = 2
+    while f"{candidate}_{suffix}".lower() in used_lower:
+        suffix += 1
+    return f"{candidate}_{suffix}"
+
+
+def assign_staged_basenames(candidates):
+    """The single authority for "what basename will this layer be staged under".
+
+    `candidates` is an ordered iterable of (key, preferred_basename) pairs — pass the
+    same layers in the same order everywhere a basename is needed (actual staging in
+    gispublisher_runner, and prediction in chart building/validation) so every caller
+    agrees even when two layers' preferred names collide. Returns {key: basename}.
+    """
+    used = set()
+    result = {}
+    for key, preferred in candidates:
+        name = staged_basename(preferred, used)
+        used.add(name)
+        result[key] = name
+    return result
 
 
 def starts_with_digit(text):

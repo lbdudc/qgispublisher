@@ -5,10 +5,7 @@ Usage:  python package.py
 Output: GISPublisher_<version>.zip
 """
 
-import os
 import re
-import shutil
-import tempfile
 import zipfile
 from pathlib import Path
 

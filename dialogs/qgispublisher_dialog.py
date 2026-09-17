@@ -297,7 +297,10 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             )
             return
 
-        default_base_url = "http://localhost:8080"
+        # Relative, so it resolves against nginx's "/backend/" proxy on whatever
+        # origin actually serves the client — not :8080, which is GeoServer's own
+        # exposed port in docker-compose.yml and has no /api/entities route at all.
+        default_base_url = "/backend"
         if self.radioDeploy.isChecked():
             if self.radioLocal.isChecked() and self.localHostEdit.text().strip():
                 default_base_url = self.localHostEdit.text().strip()
@@ -326,6 +329,23 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
                 if item.text() == dialog.saved_chart_filename:
                     item.setCheckState(Qt.CheckState.Checked)
 
+    def _basenames_and_fields(self, vector_layers):
+        """The single-authority staged basename for each layer (see
+        naming.assign_staged_basenames) plus its predicted attribute names. Used for
+        both the live chart warning icons and the pre-run validation so they always
+        agree with each other and with what gispublisher_runner will actually stage —
+        callers must pass vector_layers in the same order the runner will stage them
+        (i.e. straight from get_selected_vector_layers()/get_selected_layers()).
+        """
+        candidates = [(layer.id(), naming.layer_source_basename(layer)) for layer in vector_layers]
+        basename_by_id = naming.assign_staged_basenames(candidates)
+        basenames = list(basename_by_id.values())
+        fields_by_basename = {
+            basename_by_id[layer.id()]: {naming.attribute_name(f.name()) for f in layer.fields()}
+            for layer in vector_layers
+        }
+        return basenames, fields_by_basename
+
     def _apply_chart_validation_icons(self):
         """Mark each chart file with a warning icon/tooltip when it looks like it
         won't render against the currently selected layers."""
@@ -333,11 +353,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             return
 
         vector_layers = self.get_selected_vector_layers()
-        basenames = [naming.layer_source_basename(layer) for layer in vector_layers]
-        fields_by_basename = {
-            naming.layer_source_basename(layer): {naming.attribute_name(f.name()) for f in layer.fields()}
-            for layer in vector_layers
-        }
+        basenames, fields_by_basename = self._basenames_and_fields(vector_layers)
         warning_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
 
         for i in range(self.chartFilesList.count()):
@@ -369,11 +385,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             return True
 
         vector_layers = [layer for layer in selected_layers if layer.type() == QgsMapLayer.LayerType.VectorLayer]
-        basenames = [naming.layer_source_basename(layer) for layer in vector_layers]
-        fields_by_basename = {
-            naming.layer_source_basename(layer): {naming.attribute_name(f.name()) for f in layer.fields()}
-            for layer in vector_layers
-        }
+        basenames, fields_by_basename = self._basenames_and_fields(vector_layers)
 
         problems = []
         for i in range(self.chartFilesList.count()):

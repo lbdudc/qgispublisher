@@ -47,6 +47,13 @@ class ChartBuilderDialog(QDialog, FORM_CLASS):
         self.setupUi(self)
 
         self.layers = layers
+        # Single authority for "what basename will this layer be staged under" (see
+        # naming.assign_staged_basenames) — computed once, over the same layer list
+        # and order the main dialog uses for validation/staging, so a chart built here
+        # always predicts the same entity the generator will actually expose.
+        self._basename_by_id = naming.assign_staged_basenames(
+            (layer.id(), naming.layer_source_basename(layer)) for layer in layers
+        )
         self.chart_folder = chart_folder
         self.existing_names = set(existing_names or [])
         self.saved_chart_filename = None
@@ -59,7 +66,7 @@ class ChartBuilderDialog(QDialog, FORM_CLASS):
         else:
             self.previewFallbackLabel.setVisible(True)
 
-        self.baseUrlEdit.setText(default_base_url or "http://localhost:8080")
+        self.baseUrlEdit.setText(default_base_url or "/backend")
 
         for layer in self.layers:
             self.layerCombo.addItem(layer.name(), layer.id())
@@ -88,13 +95,20 @@ class ChartBuilderDialog(QDialog, FORM_CLASS):
         return self.layers[idx]
 
     def _layer_basename(self, layer):
-        return naming.layer_source_basename(layer)
+        return self._basename_by_id.get(layer.id(), naming.layer_source_basename(layer))
 
     def _numeric_fields(self, layer):
         return [f.name() for f in layer.fields() if f.type() in _NUMERIC_TYPES]
 
     def _all_fields(self, layer):
         return [f.name() for f in layer.fields()]
+
+    def _field_types(self, layer):
+        """{field_name: "numeric"|"categorical"}, passed to
+        chart_builder.build_chart_spec so the scatter plot can pick a linear vs.
+        point scale per axis instead of assuming every field is numeric."""
+        numeric = set(self._numeric_fields(layer))
+        return {name: ("numeric" if name in numeric else "categorical") for name in self._all_fields(layer)}
 
     def _on_layer_changed(self):
         layer = self._current_layer()
@@ -145,12 +159,15 @@ class ChartBuilderDialog(QDialog, FORM_CLASS):
             self.yFieldCombo.blockSignals(False)
             self.yFieldCombo.setEnabled(bool(y_choices))
 
-        self.colorFieldLabel.setVisible(needs_color or chart_type == chart_builder.CHART_TYPE_SCATTER)
-        self.colorFieldCombo.setVisible(needs_color or chart_type == chart_builder.CHART_TYPE_SCATTER)
-        if needs_color or chart_type == chart_builder.CHART_TYPE_SCATTER:
+        color_is_optional = chart_type in chart_builder.CHART_TYPES_WITH_OPTIONAL_COLOR
+        show_color = needs_color or color_is_optional
+        self.colorFieldLabel.setVisible(show_color)
+        self.colorFieldCombo.setVisible(show_color)
+        self.colorFieldLabel.setText("Group by" if needs_color else "Color by (optional)")
+        if show_color:
             self.colorFieldCombo.blockSignals(True)
             self.colorFieldCombo.clear()
-            if chart_type == chart_builder.CHART_TYPE_SCATTER:
+            if color_is_optional and not needs_color:
                 self.colorFieldCombo.addItem("(none)", None)
             self.colorFieldCombo.addItems(all_fields)
             self.colorFieldCombo.blockSignals(False)
@@ -183,6 +200,7 @@ class ChartBuilderDialog(QDialog, FORM_CLASS):
             x_field,
             y_field,
             color_field,
+            field_types=self._field_types(layer),
         )
 
     def _fetch_preview_rows(self, layer):

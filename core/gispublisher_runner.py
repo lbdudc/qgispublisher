@@ -1,11 +1,10 @@
-import os, re, struct, tempfile, pathlib, shutil, time, urllib.parse
+import os, re, tempfile, pathlib, shutil, time, urllib.parse
 from qgis.PyQt.QtCore import QProcess, QUrl
 from qgis.PyQt.QtWidgets import QMessageBox
 from qgis.PyQt.QtGui import QDesktopServices
 from qgis.core import QgsMapLayer
 from ..core.dependencies_checker import check_node_gispublisher
-from ..core import model_discovery
-from ..core import naming
+from ..core import layer_export, model_discovery, shapefile_io
 
 # Staging dirs created under the OS temp dir per run; never cleaned up automatically
 # by the OS, so the plugin sweeps stale ones on its own (see cleanup_old_temp_dirs).
@@ -76,83 +75,12 @@ def _export_sld(layer, dest_path):
     return False, message or "style export failed"
 
 
-def _rewrite_dbf_field_names(dbf_path, field_names, rename_map):
-    """Patch a staged shapefile's DBF field-name bytes in place per `rename_map`
-    (original name -> new name, both <= naming.DBF_FIELD_NAME_MAX_LENGTH ASCII
-    chars). Only the 11-byte name slot of each field descriptor is touched — types,
-    lengths and data stay untouched — so this only ever changes how the generator's
-    DSL parser sees the field, never the underlying data.
-
-    `field_names` is `layer.fields()`'s original (QGIS-decoded) names, in order —
-    descriptors are matched by *position* against it rather than by re-decoding each
-    descriptor's raw name bytes and comparing strings. A field whose name QGIS
-    decoded correctly (e.g. via its .cpg) can be stored on disk in an encoding that
-    doesn't round-trip through a fixed guess like latin-1 (that mismatch is exactly
-    why some field names are broken in the first place), so a byte-decode-and-compare
-    lookup silently misses precisely the fields we need to fix. If the DBF doesn't
-    have exactly as many field descriptors as `field_names`, nothing is written —
-    safer to skip the rename than guess at alignment.
-    """
-    if not rename_map:
-        return
-    with open(dbf_path, "r+b") as f:
-        header = f.read(32)
-        header_size = struct.unpack("<H", header[8:10])[0]
-        descriptor_offsets = []
-        offset = 32
-        while offset < header_size - 1:
-            f.seek(offset)
-            descriptor = f.read(32)
-            if len(descriptor) < 32 or descriptor[0] == 0x0D:
-                break
-            descriptor_offsets.append(offset)
-            offset += 32
-
-        if len(descriptor_offsets) != len(field_names):
-            return
-
-        for offset, name in zip(descriptor_offsets, field_names):
-            new_name = rename_map.get(name)
-            if new_name:
-                name_bytes = new_name.encode("ascii")[:10].ljust(11, b"\x00")
-                f.seek(offset)
-                f.write(name_bytes)
-
-
-def _rewrite_sld_field_references(sld_path, rename_map):
-    """QGIS bakes the *original* field name into an exported SLD's PropertyName
-    elements. When a field got renamed for the staged DBF (see
-    _rewrite_dbf_field_names), the SLD needs the same substitution — otherwise
-    generation succeeds but the resulting style silently fails to match any rule
-    that referenced the renamed field.
-    """
-    if not rename_map or not os.path.isfile(sld_path):
-        return
-    try:
-        with open(sld_path, "r", encoding="utf-8") as f:
-            text = f.read()
-    except OSError:
-        return
-
-    changed = False
-    for old, new in rename_map.items():
-        for tag in ("PropertyName", "ogc:PropertyName", "se:PropertyName"):
-            marker = f"<{tag}>{old}</{tag}>"
-            replacement = f"<{tag}>{new}</{tag}>"
-            if marker in text:
-                text = text.replace(marker, replacement)
-                changed = True
-
-    if changed:
-        with open(sld_path, "w", encoding="utf-8") as f:
-            f.write(text)
-
-
 class GISPublisherRunner:
 
-    def __init__(self, layers, output_dir, progress_label, progress_bar, output_text, parent=None, finished_callback=None, chart_folder=None, chart_items=None, model_entries=None, debug=False):
+    def __init__(self, layers, output_dir, progress_label, progress_bar, output_text, parent=None, finished_callback=None, chart_folder=None, chart_items=None, model_entries=None, debug=False, target_crs=layer_export.DEFAULT_TARGET_CRS):
         self.layers = layers
         self.output_dir = output_dir
+        self.target_crs = target_crs
         self.progress_label = progress_label
         self.progress_bar = progress_bar
         self.output_text = output_text
@@ -174,15 +102,16 @@ class GISPublisherRunner:
         self.debug = debug
         self.cancelled = False
         self.sld_results = []  # list of (layer_name, ok, message)
+        self.export_results = []  # list of (layer_name, ok, message)
         self.log_lines = []
         self._start_time = None
         self.resulting_host = ""
 
     def copy_layers_directly(self):
         wms_urls = []
+        vector_layers = []
 
         for layer in self.layers:
-            # Raster Layer
             if layer.type() == QgsMapLayer.LayerType.RasterLayer:
                 source = layer.source()
                 # WMS layers include "url=" in their source string
@@ -196,33 +125,40 @@ class GISPublisherRunner:
                     if url:
                         wms_urls.append(urllib.parse.unquote(url))
                 continue
+            if layer.type() == QgsMapLayer.LayerType.VectorLayer:
+                vector_layers.append(layer)
 
-            # Vector Layer — strip QGIS URI suffix (e.g. |layername=...)
-            source = pathlib.Path(layer.source().split("|")[0]).resolve()
-            base = source.with_suffix("")
+        # Every vector layer is exported through QgsVectorFileWriter (not just the
+        # ones that already are shapefiles) so GeoPackage/PostGIS/memory sources
+        # become publishable too, CRS is fixed by construction rather than merely
+        # warned about, and the plugin — not layer.source() — picks the staged
+        # basename, so two layers that would otherwise collide never overwrite each
+        # other in the flat temp dir.
+        descriptors = [layer_export.describe_layer(layer) for layer in vector_layers]
+        plans = layer_export.plan_exports(descriptors, self.target_crs)
+        plan_by_id = {plan.layer_id: plan for plan in plans}
 
-            copied = False
-            for ext in [".shp", ".dbf", ".shx", ".prj", ".cpg"]:
-                file = base.with_suffix(ext)
-                if file.exists():
-                    shutil.copy(file, self.temp_dir)
-                    copied = True
+        for layer, descriptor in zip(vector_layers, descriptors):
+            plan = plan_by_id[layer.id()]
+            ok, message = layer_export.export_layer(layer, plan, self.temp_dir, self.target_crs)
+            self.export_results.append((layer.name(), ok, message))
+            if not ok:
+                continue
+            for code in plan.warnings:
+                self.log_lines.append(f"[WARN] {layer.name()}: {code}")
 
-            if copied:
-                # Fields the generator's DSL parser can't handle as-is (leading
-                # digit, spaces, accents — e.g. a DBF-truncated "1er Apelli") get
-                # renamed in the staged copy only; the source project is untouched.
-                field_names = [f.name() for f in layer.fields()]
-                rename_map = naming.rename_map_for_fields(field_names)
-                staged_dbf = os.path.join(self.temp_dir, base.name + ".dbf")
-                if rename_map and os.path.isfile(staged_dbf):
-                    _rewrite_dbf_field_names(staged_dbf, field_names, rename_map)
+            field_names = list(descriptor.field_names)
+            staged_dbf = os.path.join(self.temp_dir, plan.staged_basename + ".dbf")
+            if plan.rename_map and os.path.isfile(staged_dbf):
+                shapefile_io.rewrite_dbf_field_names(staged_dbf, field_names, plan.rename_map)
 
-                dest_sld = os.path.join(self.temp_dir, base.name + ".sld")
-                ok, message = _export_sld(layer, dest_sld)
-                self.sld_results.append((layer.name(), ok, message))
-                if ok and rename_map:
-                    _rewrite_sld_field_references(dest_sld, rename_map)
+            dest_sld = os.path.join(self.temp_dir, plan.staged_basename + ".sld")
+            sld_ok, sld_message = _export_sld(layer, dest_sld)
+            self.sld_results.append((layer.name(), sld_ok, sld_message))
+            if sld_ok:
+                if plan.sld_rename_map:
+                    shapefile_io.rewrite_sld_field_references(dest_sld, plan.sld_rename_map)
+                shapefile_io.rewrite_unsupported_marks(dest_sld)
 
         if wms_urls:
             wms_file = os.path.join(self.temp_dir, "urls.wms")
@@ -275,6 +211,8 @@ class GISPublisherRunner:
             args.append("--config")
             args.append(config_path.name)
             working_dir = str(config_path.parent)
+        else:
+            raise ValueError("start() requires either generate=True or a config_path")
         self.run_gispublisher(gispub_path, args, working_dir)
 
     def run_gispublisher(self, gispub_path, args, working_dir=None):
@@ -289,6 +227,9 @@ class GISPublisherRunner:
             self.output_text.clear()
             self.output_text.appendPlainText("> Starting GISPublisher...\n")
 
+        for layer_name, ok, message in self.export_results:
+            if not ok:
+                self.log_lines.append(f"[EXPORT] {layer_name}: NOT PUBLISHED ({message})")
         for layer_name, ok, message in self.sld_results:
             if ok:
                 self.log_lines.append(f"[STYLE] {layer_name}: style exported")
@@ -327,14 +268,16 @@ class GISPublisherRunner:
                     self.resulting_host = match.group(0).rstrip(".,;")
 
     def handle_stdout(self):
-        text = bytes(self.process.readAllStandardOutput()).decode()
+        # errors="replace": a non-UTF-8 byte from the CLI (e.g. a Windows console's
+        # native codepage) must not raise inside this Qt slot and kill the run.
+        text = bytes(self.process.readAllStandardOutput()).decode("utf-8", errors="replace")
         if text.strip():
             self._record_output(text)
             if self.output_text:
                 self.output_text.appendPlainText(text.rstrip())
 
     def handle_stderr(self):
-        text = bytes(self.process.readAllStandardError()).decode()
+        text = bytes(self.process.readAllStandardError()).decode("utf-8", errors="replace")
         if text.strip():
             self._record_output(f"[ERROR] {text}")
             if self.output_text:

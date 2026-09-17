@@ -55,7 +55,13 @@ _TOOLTIP = {"signal": "datum"}
 
 
 def data_url(base_url, layer_basename):
-    base = (base_url or "http://localhost:8080").rstrip("/")
+    # A relative path resolves against whatever origin actually serves the client
+    # (nginx's "/backend/" proxy — see docker-compose.yml / nginx.conf), so it works
+    # unmodified for local, SSH, and AWS deploys alike. An absolute host:port guess
+    # is wrong by construction: port 8080 on the host is GeoServer's own exposed
+    # port (docker-compose.yml maps "8080:8080" for the geoserver service, not the
+    # backend), so pointing charts at ":8080" hits GeoServer and fails with CORS + 404.
+    base = (base_url or "/backend").rstrip("/")
     return f"{base}/api/entities/{naming.entity_url_segment(layer_basename)}/export/tsv"
 
 
@@ -82,12 +88,18 @@ def _base_spec(description, data_sources):
     }
 
 
-def build_chart_spec(chart_type, layer_basename, base_url, x_field, y_field=None, color_field=None):
+def build_chart_spec(chart_type, layer_basename, base_url, x_field, y_field=None, color_field=None, field_types=None):
     """Build a concrete Vega v5 spec for chart_type against layer_basename's entity.
 
     x_field/y_field/color_field are raw QGIS field names — this maps each one through
     naming.attribute_name itself, so callers should pass the field name as QGIS shows
     it, not a pre-mapped attribute name.
+
+    `field_types`, if given, maps those same raw field names to "numeric" or
+    "categorical" — only the scatter plot uses it, to pick a linear vs. point scale
+    per axis (a categorical field forced onto a linear scale renders as NaN). A field
+    missing from the mapping, or no mapping at all, is treated as numeric, matching
+    the scale every builder used before this parameter existed.
     """
     x = naming.attribute_name(x_field) if x_field else x_field
     y = naming.attribute_name(y_field) if y_field else y_field
@@ -96,6 +108,16 @@ def build_chart_spec(chart_type, layer_basename, base_url, x_field, y_field=None
     builder = _BUILDERS.get(chart_type)
     if builder is None:
         raise ValueError(f"Unknown chart type: {chart_type}")
+
+    if chart_type == CHART_TYPE_SCATTER:
+        def is_numeric(raw_field_name):
+            if not field_types or raw_field_name is None:
+                return True
+            return field_types.get(raw_field_name, "numeric") == "numeric"
+
+        return builder(layer_basename, base_url, x, y, color,
+                        x_numeric=is_numeric(x_field), y_numeric=is_numeric(y_field))
+
     return builder(layer_basename, base_url, x, y, color)
 
 
@@ -112,6 +134,11 @@ def _build_bar(layer_basename, base_url, x, y, color):
         {"orient": "bottom", "scale": "x", "title": x, "labelAngle": -45},
         {"orient": "left", "scale": "y", "title": y, "grid": True},
     ]
+    fill = {"value": "steelblue"}
+    if color:
+        spec["scales"].append({"name": "color", "type": "ordinal", "domain": {"data": "dataset", "field": color}, "range": {"scheme": "category10"}})
+        spec["legends"] = [{"fill": "color", "title": color}]
+        fill = {"scale": "color", "field": color}
     spec["marks"] = [{
         "type": "rect",
         "from": {"data": "dataset"},
@@ -120,7 +147,7 @@ def _build_bar(layer_basename, base_url, x, y, color):
             "width": {"scale": "x", "band": 1},
             "y": {"scale": "y", "field": y},
             "y2": {"scale": "y", "value": 0},
-            "fill": {"value": "steelblue"},
+            "fill": fill,
             "tooltip": _TOOLTIP,
         }},
     }]
@@ -130,6 +157,9 @@ def _build_bar(layer_basename, base_url, x, y, color):
 def _build_line(layer_basename, base_url, x, y, color):
     transform = [
         {"type": "filter", "expr": f"datum['{x}'] != null && datum['{y}'] != null"},
+        # Pre-sort the whole dataset by x before faceting by color (when present) —
+        # facet preserves each group's relative row order, so every series comes
+        # out already sorted without needing a per-facet sort.
         {"type": "collect", "sort": {"field": x, "order": "ascending"}},
     ]
     spec = _base_spec(
@@ -144,33 +174,49 @@ def _build_line(layer_basename, base_url, x, y, color):
         {"orient": "bottom", "scale": "x", "title": x, "labelAngle": -45, "labelAlign": "right", "labelOverlap": "parity", "labelFontSize": 10, "tickCount": 20},
         {"orient": "left", "scale": "y", "title": y, "format": "~s", "grid": True, "gridOpacity": 0.1},
     ]
-    spec["marks"] = [
+
+    if not color:
+        spec["marks"] = _line_series_marks("dataset", x, y, {"value": "steelblue"})
+        return spec
+
+    spec["scales"].append({"name": "color", "type": "ordinal", "domain": {"data": "dataset", "field": color}, "range": {"scheme": "category10"}})
+    spec["legends"] = [{"stroke": "color", "title": color}]
+    stroke = {"scale": "color", "field": color}
+    spec["marks"] = [{
+        "type": "group",
+        "from": {"facet": {"data": "dataset", "name": "series", "groupby": [color]}},
+        "marks": _line_series_marks("series", x, y, stroke),
+    }]
+    return spec
+
+
+def _line_series_marks(data_name, x, y, stroke):
+    return [
         {
             "type": "line",
-            "from": {"data": "dataset"},
+            "from": {"data": data_name},
             "encode": {"update": {
                 "x": {"scale": "x", "field": x},
                 "y": {"scale": "y", "field": y},
-                "stroke": {"value": "steelblue"},
+                "stroke": stroke,
                 "strokeWidth": {"value": 2},
                 "strokeOpacity": {"value": 0.8},
             }},
         },
         {
             "type": "symbol",
-            "from": {"data": "dataset"},
+            "from": {"data": data_name},
             "encode": {"update": {
                 "x": {"scale": "x", "field": x},
                 "y": {"scale": "y", "field": y},
                 "fill": {"value": "white"},
-                "stroke": {"value": "steelblue"},
+                "stroke": stroke,
                 "strokeWidth": {"value": 1},
                 "size": {"value": 30},
                 "tooltip": _TOOLTIP,
             }},
         },
     ]
-    return spec
 
 
 def _build_pie(layer_basename, base_url, x, y, color, inner_radius=0):
@@ -206,7 +252,9 @@ def _build_donut(layer_basename, base_url, x, y, color):
 
 
 def _build_grouped_bar(layer_basename, base_url, x, y, color):
-    group_field = color or x
+    if not color:
+        raise ValueError("Grouped bar chart requires a color/group field.")
+    group_field = color
     spec = _base_spec(
         f"Grouped bar chart for {layer_basename}",
         [_tsv_data_source(base_url, layer_basename)],
@@ -246,7 +294,9 @@ def _build_grouped_bar(layer_basename, base_url, x, y, color):
 
 
 def _build_stacked_bar(layer_basename, base_url, x, y, color):
-    stack_field = color or x
+    if not color:
+        raise ValueError("Stacked bar chart requires a color/group field.")
+    stack_field = color
     transform = [{"type": "stack", "groupby": [x], "field": y, "sort": {"field": stack_field}, "as": ["y0", "y1"]}]
     spec = _base_spec(
         f"Stacked bar chart for {layer_basename}",
@@ -280,6 +330,8 @@ def _build_stacked_bar(layer_basename, base_url, x, y, color):
 def _build_area(layer_basename, base_url, x, y, color):
     transform = [
         {"type": "filter", "expr": f"datum['{x}'] != null && datum['{y}'] != null"},
+        # See _build_line: pre-sorting the whole dataset means every facet (when
+        # color is given) comes out already sorted by x.
         {"type": "collect", "sort": {"field": x, "order": "ascending"}},
     ]
     spec = _base_spec(
@@ -294,31 +346,54 @@ def _build_area(layer_basename, base_url, x, y, color):
         {"orient": "bottom", "scale": "x", "title": x, "labelAngle": -45},
         {"orient": "left", "scale": "y", "title": y, "grid": True},
     ]
+
+    if not color:
+        spec["marks"] = [_area_series_mark("dataset", x, y, {"value": "steelblue"})]
+        return spec
+
+    spec["scales"].append({"name": "color", "type": "ordinal", "domain": {"data": "dataset", "field": color}, "range": {"scheme": "category10"}})
+    spec["legends"] = [{"fill": "color", "title": color}]
     spec["marks"] = [{
-        "type": "area",
-        "from": {"data": "dataset"},
-        "encode": {"update": {
-            "x": {"scale": "x", "field": x},
-            "y": {"scale": "y", "field": y},
-            "y2": {"scale": "y", "value": 0},
-            "fill": {"value": "steelblue"},
-            "fillOpacity": {"value": 0.6},
-            "stroke": {"value": "steelblue"},
-            "strokeWidth": {"value": 2},
-            "tooltip": _TOOLTIP,
-        }},
+        "type": "group",
+        "from": {"facet": {"data": "dataset", "name": "series", "groupby": [color]}},
+        "marks": [_area_series_mark("series", x, y, {"scale": "color", "field": color})],
     }]
     return spec
 
 
-def _build_scatter(layer_basename, base_url, x, y, color):
+def _area_series_mark(data_name, x, y, fill):
+    return {
+        "type": "area",
+        "from": {"data": data_name},
+        "encode": {"update": {
+            "x": {"scale": "x", "field": x},
+            "y": {"scale": "y", "field": y},
+            "y2": {"scale": "y", "value": 0},
+            "fill": fill,
+            "fillOpacity": {"value": 0.6},
+            "stroke": fill,
+            "strokeWidth": {"value": 2},
+            "tooltip": _TOOLTIP,
+        }},
+    }
+
+
+def _scatter_axis_scale(name, field, numeric, range_):
+    if numeric:
+        return {"name": name, "type": "linear", "domain": {"data": "dataset", "field": field}, "range": range_, "nice": True, "zero": False}
+    # A categorical field forced onto a linear scale renders as NaN — use a
+    # discrete point scale instead, same as the line/area x-axis.
+    return {"name": name, "type": "point", "domain": {"data": "dataset", "field": field}, "range": range_, "padding": 0.5}
+
+
+def _build_scatter(layer_basename, base_url, x, y, color, x_numeric=True, y_numeric=True):
     spec = _base_spec(
         f"Scatter plot for {layer_basename}",
         [_tsv_data_source(base_url, layer_basename)],
     )
     spec["scales"] = [
-        {"name": "x", "type": "linear", "domain": {"data": "dataset", "field": x}, "range": "width", "nice": True, "zero": False},
-        {"name": "y", "type": "linear", "domain": {"data": "dataset", "field": y}, "range": "height", "nice": True, "zero": False},
+        _scatter_axis_scale("x", x, x_numeric, "width"),
+        _scatter_axis_scale("y", y, y_numeric, "height"),
     ]
     spec["axes"] = [
         {"orient": "bottom", "scale": "x", "title": x, "grid": True},
@@ -427,8 +502,9 @@ def _build_box_plot(layer_basename, base_url, x, y, color):
 
 
 def _build_heatmap(layer_basename, base_url, x, y, color):
-    measure = color or y
-    transform = [{"type": "aggregate", "groupby": [x, y], "fields": [measure], "ops": ["mean"], "as": ["value"]}]
+    if not color:
+        raise ValueError("Heatmap requires a color/value field to aggregate.")
+    transform = [{"type": "aggregate", "groupby": [x, y], "fields": [color], "ops": ["mean"], "as": ["value"]}]
     spec = _base_spec(
         f"Heatmap for {layer_basename}",
         [_tsv_data_source(base_url, layer_basename, transform)],
@@ -484,7 +560,18 @@ CHART_TYPE_FIELD_REQUIREMENTS = {
     CHART_TYPE_SCATTER: (True, True, False),
     CHART_TYPE_HISTOGRAM: (True, False, False),
     CHART_TYPE_BOX_PLOT: (True, True, False),
-    CHART_TYPE_HEATMAP: (True, True, False),
+    CHART_TYPE_HEATMAP: (True, True, True),
+}
+
+# Chart types where a color field is *optional* but meaningful — it adds a colored
+# series/encoding rather than being silently accepted and ignored. Separate from
+# CHART_TYPE_FIELD_REQUIREMENTS, which only tracks fields a builder cannot run
+# without at all.
+CHART_TYPES_WITH_OPTIONAL_COLOR = {
+    CHART_TYPE_BAR,
+    CHART_TYPE_LINE,
+    CHART_TYPE_AREA,
+    CHART_TYPE_SCATTER,
 }
 
 
