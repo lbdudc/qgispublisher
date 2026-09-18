@@ -14,6 +14,11 @@ PLUGIN_NAME = "GISPublisher"
 EXCLUDE_NAMES = {
     ".git", ".gitignore", ".github", ".claude",
     "__pycache__", "package.sh", "package.py", "tests",
+    # Generated-app output, when someone points a Generate/Deploy run's output
+    # folder at the plugin repo itself (as happened during manual testing) — rglob
+    # would otherwise happily bundle an entire Vue/Spring Boot/docker-compose app
+    # into the plugin zip.
+    "product", "output", "spec.json", "spec.dsl",
 }
 
 EXCLUDE_SUFFIXES = {".pyc", ".pyo", ".zip"}
