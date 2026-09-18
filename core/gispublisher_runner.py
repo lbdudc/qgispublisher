@@ -203,6 +203,19 @@ class GISPublisherRunner:
             args.append(shapefiles_folder)
             args.append("-g")
             working_dir = self.output_dir
+            if config_path:
+                # Passing a config here is what makes the App name/Version
+                # fields actually reach the CLI on a generate run — without
+                # it, gispublisher falls back to its own default config.json
+                # ("test"/"2.0.0"). Its own --config resolution is
+                # cwd-relative with no absolute-path support, so the config
+                # must live in (and cwd must be) the same directory — which
+                # build_deploy_config's dest_dir already arranges to be
+                # output_dir, so this ends up unchanged in practice.
+                config_path = pathlib.Path(config_path)
+                args.append("--config")
+                args.append(config_path.name)
+                working_dir = str(config_path.parent)
         elif config_path:  # deploy
             shapefiles_folder = self.temp_dir
             config_path = pathlib.Path(config_path)

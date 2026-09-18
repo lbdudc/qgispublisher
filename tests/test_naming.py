@@ -83,6 +83,23 @@ class NamingTests(unittest.TestCase):
         self.assertEqual(len(renamed), 2)
         self.assertNotEqual(renamed["1a"], renamed["-1a"])
 
+    def test_suggest_app_name_leaves_valid_names_untouched_semantically(self):
+        self.assertTrue(naming.is_valid_dsl_identifier(naming.suggest_app_name("MyApp")))
+
+    def test_suggest_app_name_fixes_spaces_and_punctuation(self):
+        # A QGIS project title is a realistic input: spaces, punctuation, mixed case.
+        result = naming.suggest_app_name("Health Centers - A Coruña (2024)")
+        self.assertTrue(naming.is_valid_dsl_identifier(result))
+
+    def test_suggest_app_name_fixes_leading_digit(self):
+        result = naming.suggest_app_name("2024 Census")
+        self.assertTrue(naming.is_valid_dsl_identifier(result))
+
+    def test_suggest_app_name_empty_input(self):
+        self.assertTrue(naming.is_valid_dsl_identifier(naming.suggest_app_name("")))
+        self.assertTrue(naming.is_valid_dsl_identifier(naming.suggest_app_name("   ")))
+        self.assertTrue(naming.is_valid_dsl_identifier(naming.suggest_app_name("---")))
+
     def test_layer_source_basename_from_path(self):
         class FakeLayer:
             def source(self):

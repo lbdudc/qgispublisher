@@ -18,18 +18,27 @@ def get_gispublisher_root():
     return npm_root / "@lbdudc" / "gis-publisher"
 
 
-def build_deploy_config(deploy_type, fields):
-    """Write a temporary GISPublisher deploy config JSON and return its path.
+def build_deploy_config(deploy_type, fields, name="test", version="1.0.0", dest_dir=None):
+    """Write a temporary GISPublisher config JSON and return its path.
 
     `fields` holds the plain string/int values collected from the deploy form
-    for the given `deploy_type` ("local", "ssh", or "aws").
+    for the given `deploy_type` ("local", "ssh", or "aws") — pass {} for a
+    generate-only run, which still needs a concrete `deploy.type` since
+    gispublisher's main.js dereferences `config.deploy.type` unconditionally
+    even when only generating.
+
+    `dest_dir`, when given, writes the file there instead of the system temp
+    directory — used for generate so the config's own parent directory can
+    double as gispublisher's cwd (its --config resolution is cwd-relative,
+    with no support for an absolute path), letting the CLI's "output" folder
+    land in the user's chosen output directory instead of a temp one.
     """
     gispublisher_root = get_gispublisher_root()
     platform_dir = gispublisher_root / "node_modules" / "@lbdudc" / "mini-lps" / "src" / "platform"
 
     base_json = {
-        "name": "test",
-        "version": "2.0.0",
+        "name": name,
+        "version": version,
         "platform": {
             "codePath": str(platform_dir / "code"),
             "featureModel": str(platform_dir / "model.xml"),
@@ -78,7 +87,7 @@ def build_deploy_config(deploy_type, fields):
 
     final_json = {**base_json, **deploy_section}
 
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".json", dir=dest_dir)
     with open(temp_file.name, "w") as f:
         json.dump(final_json, f, indent=4)
 

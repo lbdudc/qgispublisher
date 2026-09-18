@@ -146,6 +146,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self.load_layers()
         self.refresh_models_list()
         self.load_history()
+        self._apply_default_app_identity()
         self.restore_selection_from_project()
         self.check_requirements()
 
@@ -154,7 +155,17 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         project-scoped: layers, project-embedded models, and the saved selection."""
         self.load_layers()
         self.refresh_models_list()
+        self._apply_default_app_identity()
         self.restore_selection_from_project()
+
+    def _apply_default_app_identity(self):
+        """Seed App name/Version from the QGIS project, before any saved selection
+        (restore_selection_from_project) has a chance to override them. Runs on
+        every project load so a brand new project never inherits the previous
+        project's name."""
+        project = QgsProject.instance()
+        self.appNameEdit.setText(project.title() or project.baseName() or "App")
+        self.appVersionEdit.setText("1.0.0")
 
     def closeEvent(self, event):
         self.save_current_selection()
@@ -749,6 +760,8 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
     def save_current_selection(self):
         project = QgsProject.instance()
         selection = {
+            "app_name": self.appNameEdit.text().strip(),
+            "app_version": self.appVersionEdit.text().strip(),
             "layer_ids": [
                 self.layersList.item(i).data(Qt.ItemDataRole.UserRole)
                 for i in range(self.layersList.count())
@@ -774,6 +787,14 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             return  # nothing saved yet — keep the "everything selected" default
 
         selection = state_store.load_project_selection(project)
+
+        # Only override the project-derived defaults already set by
+        # _apply_default_app_identity() if this project actually saved one —
+        # older saved selections predate app_name/app_version and left them empty.
+        if selection.get("app_name"):
+            self.appNameEdit.setText(selection["app_name"])
+        if selection.get("app_version"):
+            self.appVersionEdit.setText(selection["app_version"])
 
         layer_ids = set(selection["layer_ids"])
         for i in range(self.layersList.count()):
@@ -900,6 +921,9 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         if not self._validate_checked_charts(selected_layers):
             return
 
+        if not self._validate_app_name():
+            return
+
         self.save_current_selection()
 
         if self.radioGenerate.isChecked():
@@ -907,9 +931,50 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         else:
             self.run_deploy(selected_layers)
 
+    def _validate_app_name(self):
+        """gispublisher's dsl-util.js interpolates the app name directly into
+        `CREATE GIS <name> USING 4326;` with no sanitization — a name with spaces
+        or punctuation (e.g. a QGIS project title, which is what App name defaults
+        to) produces invalid DSL and the run fails deep inside the CLI's parser.
+        Catch it here instead, with a one-click fix."""
+        name = self.appNameEdit.text().strip()
+        if naming.is_valid_dsl_identifier(name):
+            return True
+
+        suggestion = naming.suggest_app_name(name)
+        msg_box = QMessageBox(self)
+        msg_box.setIcon(QMessageBox.Icon.Warning)
+        msg_box.setWindowTitle("Invalid app name")
+        msg_box.setText(
+            f'"{name}" is not a valid app name (letters, digits and underscore only, '
+            "not starting with a digit) and would make GISPublisher fail."
+        )
+        msg_box.setInformativeText(f'Use "{suggestion}" instead?')
+        use_button = msg_box.addButton(f'Use "{suggestion}"', QMessageBox.ButtonRole.AcceptRole)
+        msg_box.addButton(QMessageBox.StandardButton.Cancel)
+        msg_box.exec()
+
+        if msg_box.clickedButton() == use_button:
+            self.appNameEdit.setText(suggestion)
+            return True
+        return False
+
     def run_generate(self, selected_layers):
         if not self.output_dir:
             QMessageBox.warning(self, "Output folder required", "Select an output folder before generating.")
+            return
+
+        name = self.appNameEdit.text().strip()
+        version = self.appVersionEdit.text().strip() or "1.0.0"
+        try:
+            # Written into output_dir itself, not the system temp dir: its own
+            # --config resolution is cwd-relative with no absolute-path support,
+            # so the config's parent directory and gispublisher's cwd have to be
+            # the same place for this to be found at all (see gispublisher_runner
+            # .start()'s generate branch).
+            config_path = build_deploy_config("local", {}, name=name, version=version, dest_dir=self.output_dir)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", str(e))
             return
 
         progress_dialog = ProgressDialog(title="Generating...", parent=self)
@@ -926,22 +991,24 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             output_text=progress_dialog.outputText,
             parent=self,
             debug=self.DEBUG,
-            finished_callback=lambda: self.on_generate_finished(progress_dialog),
+            finished_callback=lambda: self.on_generate_finished(progress_dialog, config_path),
         )
         progress_dialog.closeButton.clicked.connect(self.runner.cancel)
 
         try:
-            self.runner.start(generate=True)
+            self.runner.start(generate=True, config_path=config_path)
         except Exception as e:
             progress_dialog.close()
+            os.remove(config_path)
             QMessageBox.critical(self, "Error", str(e))
 
-    def on_generate_finished(self, progress_dialog):
+    def on_generate_finished(self, progress_dialog, config_path):
         progress_dialog.set_finished_state()
         progress_dialog.closeButton.clicked.disconnect()
         progress_dialog.closeButton.clicked.connect(progress_dialog.close)
         if not self.DEBUG:
             progress_dialog.close()
+        os.remove(config_path)
 
     def run_deploy(self, selected_layers):
         missing = self.validate_deploy_fields()
@@ -954,9 +1021,11 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             return
 
         deploy_type, fields = self.collect_deploy_fields()
+        name = self.appNameEdit.text().strip()
+        version = self.appVersionEdit.text().strip() or "1.0.0"
 
         try:
-            config_path = build_deploy_config(deploy_type, fields)
+            config_path = build_deploy_config(deploy_type, fields, name=name, version=version)
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
             return

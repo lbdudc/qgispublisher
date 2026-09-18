@@ -119,6 +119,23 @@ def safe_field_name(field_name, max_length=DBF_FIELD_NAME_MAX_LENGTH):
     return ascii_name[:max_length] or "field"
 
 
+def suggest_app_name(name):
+    """A DSL-safe suggestion for an invalid application name.
+
+    gispublisher's dsl-util.js interpolates config.name directly into
+    ``CREATE GIS <name> USING 4326;`` with no sanitization at all, so a name with
+    spaces or punctuation (e.g. a QGIS project title) produces invalid DSL and the
+    run fails deep inside the CLI's ANTLR parser. Used by the plugin to offer a
+    fix-up rather than let that happen; unlike safe_field_name, there's no length
+    limit to enforce here (DBF's 10-character cap doesn't apply to an app name).
+    """
+    ascii_name = normalize_diacritics(name or "")
+    ascii_name = _NON_IDENTIFIER_CHARS.sub("_", ascii_name).strip("_")
+    if not ascii_name or ascii_name[0].isdigit():
+        ascii_name = "App_" + ascii_name
+    return ascii_name or "App"
+
+
 def rename_map_for_fields(field_names, max_length=DBF_FIELD_NAME_MAX_LENGTH):
     """``{original_name: staged_name}`` for the subset of `field_names` that need
     fixing up before staging (see ``safe_field_name``), deduplicated against every
