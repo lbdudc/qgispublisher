@@ -137,6 +137,24 @@ class RewriteSldTextTests(unittest.TestCase):
         self.assertFalse(changed)
         self.assertEqual(new_text, "<not-xml")
 
+    def test_reserved_nsN_namespace_prefix_does_not_raise(self):
+        # xml.etree.ElementTree.register_namespace() raises ValueError
+        # ("Prefix format reserved for internal use") for any "nsN" prefix —
+        # QGIS's own SLD export can emit exactly this for some symbology
+        # (embedded SVG markers/graphics), which crashed the whole run with a
+        # bare, undebuggable error message before this was guarded against.
+        sld = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<StyledLayerDescriptor xmlns:ogc="http://www.opengis.net/ogc" '
+            'xmlns:ns0="http://www.w3.org/1999/xlink" xmlns:ns12="http://example.com/other">'
+            "<ogc:PropertyName>1er Apelli</ogc:PropertyName>"
+            "</StyledLayerDescriptor>"
+        )
+        changed, new_text = shapefile_io._rewrite_sld_text(sld, {"1er Apelli": "f1erApelli"})
+        self.assertTrue(changed)
+        self.assertIn("f1erApelli", new_text)
+        self.assertNotIn("1er Apelli", new_text)
+
     def test_preserves_xml_declaration(self):
         sld = '<?xml version="1.0" encoding="UTF-8"?><Rule><PropertyName>a</PropertyName></Rule>'
         changed, new_text = shapefile_io._rewrite_sld_text(sld, {"a": "b"})

@@ -12,6 +12,14 @@ import xml.etree.ElementTree as ET
 
 _XML_DECL_RE = re.compile(r"^\s*<\?xml[^>]*\?>\s*")
 _XMLNS_DECL_RE = re.compile(r'xmlns:([A-Za-z_][\w.-]*)="([^"]*)"')
+# xml.etree.ElementTree reserves any "nsN" prefix (N = digits) for its own
+# auto-generated namespace prefixes: ET.register_namespace() raises
+# ValueError("Prefix format reserved for internal use") if asked to register
+# one explicitly. QGIS's own SLD export can emit exactly this kind of
+# auto-generated prefix for some symbology (embedded SVG markers/graphics), so
+# _rewrite_element_text skips registering those rather than letting a staged
+# layer's own style crash the whole run.
+_RESERVED_NS_PREFIX_RE = re.compile(r"^ns\d+$")
 _PROPERTY_NAME_LOCALNAMES = {"PropertyName"}
 _WELL_KNOWN_NAME_LOCALNAMES = {"WellKnownName"}
 
@@ -144,6 +152,13 @@ def _rewrite_element_text(text, localnames, value_map):
     xml_decl = decl_match.group(0) if decl_match else ""
 
     for prefix, uri in _XMLNS_DECL_RE.findall(text):
+        # See _RESERVED_NS_PREFIX_RE: registering this prefix would raise.
+        # Local-name matching below doesn't depend on which prefix a namespace
+        # keeps, so skipping it only changes what ET.tostring() prints for
+        # *this* namespace in the re-serialized output, never what gets found
+        # or rewritten.
+        if _RESERVED_NS_PREFIX_RE.match(prefix):
+            continue
         ET.register_namespace(prefix, uri)
 
     try:
