@@ -155,6 +155,50 @@ class RewriteSldTextTests(unittest.TestCase):
         self.assertIn("f1erApelli", new_text)
         self.assertNotIn("1er Apelli", new_text)
 
+    def test_default_namespace_stays_unprefixed(self):
+        # QGIS's own SLD export always declares the SLD namespace as the *default*
+        # (unprefixed) one -- xmlns="http://www.opengis.net/sld" on the root, with
+        # NamedLayer/UserStyle/Rule/... left bare. Before this was fixed, rewriting
+        # anything in a document like this silently re-prefixed every one of those
+        # elements with an arbitrary "nsN:" on output (ET.tostring() has no way to
+        # know an unregistered namespace was meant to stay unprefixed) -- a real SLD
+        # corruption, not a cosmetic difference, and the actual cause of styles
+        # failing to render in the generated app even though generation "succeeded".
+        sld = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<StyledLayerDescriptor xmlns="http://www.opengis.net/sld" '
+            'xmlns:ogc="http://www.opengis.net/ogc" xmlns:se="http://www.opengis.net/se">'
+            "<NamedLayer><UserStyle><se:FeatureTypeStyle><se:Rule>"
+            "<ogc:PropertyName>TOTAL</ogc:PropertyName>"
+            "</se:Rule></se:FeatureTypeStyle></UserStyle></NamedLayer>"
+            "</StyledLayerDescriptor>"
+        )
+        changed, new_text = shapefile_io._rewrite_sld_text(sld, {"TOTAL": "total"})
+        self.assertTrue(changed)
+        self.assertIn("total", new_text)
+        self.assertNotIn("ns0:", new_text)
+        self.assertIn("<StyledLayerDescriptor ", new_text)
+        self.assertIn("<NamedLayer>", new_text)
+        self.assertIn("<UserStyle>", new_text)
+
+    def test_default_namespace_survives_alongside_reserved_ns_prefix(self):
+        # Combines both real-world quirks in one document: the default SLD
+        # namespace (see the test above) plus a QGIS-emitted "ns0"-reserved prefix
+        # (see test_reserved_nsN_namespace_prefix_does_not_raise) for an embedded
+        # graphic reference.
+        sld = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<StyledLayerDescriptor xmlns="http://www.opengis.net/sld" '
+            'xmlns:ogc="http://www.opengis.net/ogc" xmlns:ns0="http://www.w3.org/1999/xlink">'
+            "<NamedLayer><ogc:PropertyName>1er Apelli</ogc:PropertyName></NamedLayer>"
+            "</StyledLayerDescriptor>"
+        )
+        changed, new_text = shapefile_io._rewrite_sld_text(sld, {"1er Apelli": "f1erApelli"})
+        self.assertTrue(changed)
+        self.assertIn("f1erApelli", new_text)
+        self.assertIn("<StyledLayerDescriptor ", new_text)
+        self.assertIn("<NamedLayer>", new_text)
+
     def test_preserves_xml_declaration(self):
         sld = '<?xml version="1.0" encoding="UTF-8"?><Rule><PropertyName>a</PropertyName></Rule>'
         changed, new_text = shapefile_io._rewrite_sld_text(sld, {"a": "b"})
