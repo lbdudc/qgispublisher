@@ -108,6 +108,78 @@ class PlanExportsTests(unittest.TestCase):
         plans = layer_export.plan_exports([_descriptor("id1", "x", field_names=["name", "pop"])])
         self.assertEqual(plans[0].sld_rename_map, {})
 
+    def test_basename_by_id_override_is_used_verbatim(self):
+        # A raster staged alongside these vectors would otherwise never collide-check
+        # against them — passing a precomputed basename_by_id is how the runner
+        # shares one namespace across both. plan_exports must honour it rather than
+        # recomputing from descriptors alone.
+        descriptors = [_descriptor("id1", "Roads", source="/data/roads.shp")]
+        plans = layer_export.plan_exports(descriptors, basename_by_id={"id1": "roads_2"})
+        self.assertEqual(plans[0].staged_basename, "roads_2")
+
+
+def _raster_descriptor(layer_id, name, source, provider_type):
+    return layer_export.RasterDescriptor(
+        layer_id=layer_id, name=name, source=source, provider_type=provider_type
+    )
+
+
+class ClassifyRasterTests(unittest.TestCase):
+    def test_gdal_provider_is_local(self):
+        plan = layer_export.classify_raster(
+            _raster_descriptor("id1", "elevation", "/data/elevation.tif", "gdal")
+        )
+        self.assertEqual(plan.kind, layer_export.RASTER_KIND_LOCAL)
+
+    def test_wms_with_layers_param_is_scoped(self):
+        source = "crs=EPSG:4326&format=image/png&layers=roads&styles=default&url=https://example.com/wms"
+        plan = layer_export.classify_raster(_raster_descriptor("id1", "Roads WMS", source, "wms"))
+        self.assertEqual(plan.kind, layer_export.RASTER_KIND_WMS)
+        self.assertEqual(plan.wms_request["url"], "https://example.com/wms")
+        self.assertEqual(plan.wms_request["layers"], ["roads"])
+        self.assertEqual(plan.wms_request["styles"], ["default"])
+        self.assertEqual(plan.wms_request["crs"], "EPSG:4326")
+        self.assertEqual(plan.wms_request["format"], "image/png")
+        self.assertEqual(plan.message, "")
+
+    def test_wms_layers_param_can_list_multiple_sublayers(self):
+        source = "layers=roads,parcels&url=https://example.com/wms"
+        plan = layer_export.classify_raster(_raster_descriptor("id1", "x", source, "wms"))
+        self.assertEqual(plan.wms_request["layers"], ["roads", "parcels"])
+
+    def test_wms_without_layers_param_is_flagged_but_kept(self):
+        source = "url=https://example.com/wms"
+        plan = layer_export.classify_raster(_raster_descriptor("id1", "x", source, "wms"))
+        self.assertEqual(plan.kind, layer_export.RASTER_KIND_WMS)
+        self.assertEqual(plan.wms_request["layers"], [])
+        self.assertIn("entire remote service", plan.message)
+
+    def test_wms_without_url_is_rejected(self):
+        plan = layer_export.classify_raster(_raster_descriptor("id1", "x", "layers=roads", "wms"))
+        self.assertEqual(plan.kind, layer_export.RASTER_KIND_REJECTED)
+
+    def test_xyz_tile_layer_is_rejected(self):
+        source = "type=xyz&url=https://tile.example.com/{z}/{x}/{y}.png"
+        plan = layer_export.classify_raster(_raster_descriptor("id1", "Basemap", source, "wms"))
+        self.assertEqual(plan.kind, layer_export.RASTER_KIND_REJECTED)
+        self.assertIn("XYZ", plan.message)
+
+    def test_arcgis_provider_is_rejected(self):
+        plan = layer_export.classify_raster(
+            _raster_descriptor("id1", "x", "url=https://example.com/rest", "arcgismapserver")
+        )
+        self.assertEqual(plan.kind, layer_export.RASTER_KIND_REJECTED)
+
+    def test_unrecognized_provider_is_rejected_with_provider_named_in_message(self):
+        plan = layer_export.classify_raster(_raster_descriptor("id1", "x", "", "wcs"))
+        self.assertEqual(plan.kind, layer_export.RASTER_KIND_REJECTED)
+        self.assertIn("wcs", plan.message)
+
+    def test_url_percent_encoding_is_decoded(self):
+        source = "layers=roads&url=https%3A%2F%2Fexample.com%2Fwms%3Fservice%3DWMS"
+        plan = layer_export.classify_raster(_raster_descriptor("id1", "x", source, "wms"))
+        self.assertEqual(plan.wms_request["url"], "https://example.com/wms?service=WMS")
+
 
 if __name__ == "__main__":
     unittest.main()

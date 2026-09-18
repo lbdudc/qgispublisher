@@ -1,10 +1,10 @@
-import os, re, tempfile, pathlib, shutil, time, urllib.parse
+import json, os, re, tempfile, pathlib, shutil, time
 from qgis.PyQt.QtCore import QProcess, QUrl
 from qgis.PyQt.QtWidgets import QMessageBox
 from qgis.PyQt.QtGui import QDesktopServices
 from qgis.core import QgsMapLayer
 from ..core.dependencies_checker import check_node_gispublisher
-from ..core import layer_export, model_discovery, shapefile_io
+from ..core import layer_export, model_discovery, naming, shapefile_io
 
 # Staging dirs created under the OS temp dir per run; never cleaned up automatically
 # by the OS, so the plugin sweeps stale ones on its own (see cleanup_old_temp_dirs).
@@ -108,25 +108,46 @@ class GISPublisherRunner:
         self.resulting_host = ""
 
     def copy_layers_directly(self):
-        wms_urls = []
         vector_layers = []
+        vector_descriptor_by_id = {}
+        local_raster_layers = []
+        raster_descriptor_by_id = {}
+        wms_requests = []
 
         for layer in self.layers:
             if layer.type() == QgsMapLayer.LayerType.RasterLayer:
-                source = layer.source()
-                # WMS layers include "url=" in their source string
-                if "url=" in source.lower():
-                    parts = dict(
-                        part.split("=", 1)
-                        for part in source.split("&")
-                        if "=" in part
-                    )
-                    url = parts.get("url") or parts.get("URL")
-                    if url:
-                        wms_urls.append(urllib.parse.unquote(url))
+                descriptor = layer_export.describe_raster(layer)
+                plan = layer_export.classify_raster(descriptor)
+                if plan.kind == layer_export.RASTER_KIND_LOCAL:
+                    local_raster_layers.append(layer)
+                    raster_descriptor_by_id[layer.id()] = descriptor
+                elif plan.kind == layer_export.RASTER_KIND_WMS:
+                    wms_requests.append(plan.wms_request)
+                    if plan.message:
+                        self.log_lines.append(f"[WARN] {layer.name()}: {plan.message}")
+                    self.export_results.append((layer.name(), True, ""))
+                else:  # RASTER_KIND_REJECTED — every layer gets an export_results
+                    # entry, including this one, so a skipped layer is never silently
+                    # absent from the run's outcome.
+                    self.export_results.append((layer.name(), False, plan.message))
                 continue
             if layer.type() == QgsMapLayer.LayerType.VectorLayer:
                 vector_layers.append(layer)
+                vector_descriptor_by_id[layer.id()] = layer_export.describe_layer(layer)
+
+        # Vector layers and local rasters share ONE staged-basename namespace,
+        # computed in the order layers appear in self.layers, so a raster and a
+        # vector that would otherwise collide (e.g. "roads.tif" next to "roads.shp")
+        # never overwrite each other in the flat temp dir — see
+        # naming.assign_staged_basenames.
+        basename_candidates = []
+        for layer in self.layers:
+            descriptor = vector_descriptor_by_id.get(layer.id()) or raster_descriptor_by_id.get(layer.id())
+            if descriptor is not None:
+                basename_candidates.append(
+                    (descriptor.layer_id, naming.preferred_basename_from_source(descriptor.name, descriptor.source))
+                )
+        basename_by_id = naming.assign_staged_basenames(basename_candidates)
 
         # Every vector layer is exported through QgsVectorFileWriter (not just the
         # ones that already are shapefiles) so GeoPackage/PostGIS/memory sources
@@ -134,11 +155,11 @@ class GISPublisherRunner:
         # warned about, and the plugin — not layer.source() — picks the staged
         # basename, so two layers that would otherwise collide never overwrite each
         # other in the flat temp dir.
-        descriptors = [layer_export.describe_layer(layer) for layer in vector_layers]
-        plans = layer_export.plan_exports(descriptors, self.target_crs)
+        vector_descriptors = [vector_descriptor_by_id[layer.id()] for layer in vector_layers]
+        plans = layer_export.plan_exports(vector_descriptors, self.target_crs, basename_by_id=basename_by_id)
         plan_by_id = {plan.layer_id: plan for plan in plans}
 
-        for layer, descriptor in zip(vector_layers, descriptors):
+        for layer, descriptor in zip(vector_layers, vector_descriptors):
             plan = plan_by_id[layer.id()]
             ok, message = layer_export.export_layer(layer, plan, self.temp_dir, self.target_crs)
             self.export_results.append((layer.name(), ok, message))
@@ -160,10 +181,29 @@ class GISPublisherRunner:
                     shapefile_io.rewrite_sld_field_references(dest_sld, plan.sld_rename_map)
                 shapefile_io.rewrite_unsupported_marks(dest_sld)
 
-        if wms_urls:
+        for layer in local_raster_layers:
+            staged_basename = basename_by_id[layer.id()]
+            ok, message = layer_export.export_raster(layer, staged_basename, self.temp_dir)
+            self.export_results.append((layer.name(), ok, message))
+
+        if wms_requests:
+            # urls.wms keeps its original bare-URL-per-line shape (deduplicated) so a
+            # reader that doesn't understand the sidecar still works exactly as
+            # before, publishing every layer the service advertises. urls.wms.json
+            # is additive: a reader that looks for it can scope each service down to
+            # just the sublayer(s) actually picked; see WmsProcessor.js.
+            seen_urls = []
+            for request in wms_requests:
+                if request["url"] not in seen_urls:
+                    seen_urls.append(request["url"])
+
             wms_file = os.path.join(self.temp_dir, "urls.wms")
             with open(wms_file, "w", encoding="utf-8") as f:
-                f.write("\n".join(wms_urls))
+                f.write("\n".join(seen_urls))
+
+            sidecar_file = wms_file + ".json"
+            with open(sidecar_file, "w", encoding="utf-8") as f:
+                json.dump(wms_requests, f)
 
     def copy_chart_folder(self):
         if self.chart_folder and os.path.exists(self.chart_folder):
@@ -312,25 +352,41 @@ class GISPublisherRunner:
         msg_box.setDetailedText("\n".join(self.log_lines))
         msg_box.exec()
 
+    def failed_export_layers(self):
+        """Layers whose export_results entry recorded a failure — dropped rasters,
+        rejected providers, and export errors alike. Checked by finished()/
+        show_success_popup() so a run where some layers didn't make it in is never
+        reported as a bare, unqualified success.
+        """
+        return [(name, message) for name, ok, message in self.export_results if not ok]
+
     def show_success_popup(self):
+        failed = self.failed_export_layers()
+
         if self.debug:
-            self.progress_label.setText("GISPublisher finished ✅")
+            label = "GISPublisher finished ✅" if not failed else f"GISPublisher finished with {len(failed)} warning(s) ⚠️"
+            self.progress_label.setText(label)
             self.output_text.appendPlainText("\n> Process completed successfully.")
             return
 
         msg_box = QMessageBox(self.parent)
-        msg_box.setIcon(QMessageBox.Icon.Information)
+        msg_box.setIcon(QMessageBox.Icon.Information if not failed else QMessageBox.Icon.Warning)
         msg_box.setWindowTitle("Process completed")
 
         if self.generate:
-            msg_box.setText("The application was generated successfully.")
+            text = "The application was generated successfully."
             open_button = msg_box.addButton("Open folder", QMessageBox.ButtonRole.ActionRole)
         else:
             text = "Deployment completed successfully."
             if self.resulting_host:
                 text += f"\n\nThe application is available at:\n{self.resulting_host}"
-            msg_box.setText(text)
             open_button = None
+
+        if failed:
+            text += f"\n\n{len(failed)} layer(s) were not published:\n" + "\n".join(
+                f"- {name}: {message}" for name, message in failed
+            )
+        msg_box.setText(text)
 
         msg_box.addButton(QMessageBox.StandardButton.Ok)
         msg_box.exec()
@@ -352,9 +408,13 @@ class GISPublisherRunner:
             if self.output_text:
                 self.output_text.appendPlainText("\n> Process cancelled by user.")
         elif exitCode == 0:
+            failed = self.failed_export_layers()
             self.progress_bar.setValue(100)
             self.progress_bar.setStyleSheet("")
-            self.progress_label.setText("GISPublisher finished ✅")
+            if failed:
+                self.progress_label.setText(f"GISPublisher finished with {len(failed)} warning(s) ⚠️")
+            else:
+                self.progress_label.setText("GISPublisher finished ✅")
             if self.output_text:
                 self.output_text.appendPlainText("\n> Process completed successfully.")
             self.show_success_popup()

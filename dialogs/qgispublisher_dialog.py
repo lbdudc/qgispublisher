@@ -21,7 +21,7 @@ from .chart_builder_dialog import ChartBuilderDialog
 from ..core.dependencies_checker import find_node, find_gispublisher, find_npm
 from ..core.deploy_config import build_deploy_config
 from ..core.gispublisher_runner import GISPublisherRunner, cleanup_old_temp_dirs
-from ..core import model_discovery, state_store, chart_builder, naming
+from ..core import model_discovery, state_store, chart_builder, layer_export, naming
 
 FORM_CLASS, _ = uic.loadUiType(
     os.path.join(os.path.dirname(__file__), "ui", "gispublisher_dialog.ui")
@@ -430,6 +430,44 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             self,
             "Chart validation issues",
             "The following selected chart(s) look like they won't render correctly:\n\n"
+            + "\n".join(lines)
+            + "\n\nContinue anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return reply == QMessageBox.StandardButton.Yes
+
+    def _rejected_raster_layers(self, selected_layers):
+        """Raster layers layer_export.classify_raster would refuse to publish (XYZ
+        tile layers, ArcGIS REST, unrecognized providers), with the reason — computed
+        without staging anything, so this can run as a preflight before the user
+        confirms Generate/Deploy. Vector layers and local rasters are never rejected
+        (a failed vector/raster *export* is a different, later failure mode, reported
+        after the fact via export_results — see GISPublisherRunner.finished()).
+        """
+        rejected = []
+        for layer in selected_layers:
+            if layer.type() != QgsMapLayer.LayerType.RasterLayer:
+                continue
+            descriptor = layer_export.describe_raster(layer)
+            plan = layer_export.classify_raster(descriptor)
+            if plan.kind == layer_export.RASTER_KIND_REJECTED:
+                rejected.append((layer.name(), plan.message))
+        return rejected
+
+    def _validate_checked_layers(self, selected_layers):
+        """Blocking (confirm-to-proceed) check run before Generate/Deploy: warns
+        about any selected layer that's known upfront to be unpublishable, so it's
+        never silently dropped without the user having a chance to uncheck it."""
+        rejected = self._rejected_raster_layers(selected_layers)
+        if not rejected:
+            return True
+
+        lines = [f"- {name}: {message}" for name, message in rejected]
+        reply = QMessageBox.warning(
+            self,
+            "Unsupported layers",
+            "The following selected layer(s) can't be published and will be skipped:\n\n"
             + "\n".join(lines)
             + "\n\nContinue anyway?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -916,6 +954,9 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
                 "Node.js and/or GISPublisher are missing. See the message at the top of the window "
                 "and use the Install button if needed.",
             )
+            return
+
+        if not self._validate_checked_layers(selected_layers):
             return
 
         if not self._validate_checked_charts(selected_layers):
