@@ -100,6 +100,25 @@ class NamingTests(unittest.TestCase):
         self.assertTrue(naming.is_valid_dsl_identifier(naming.suggest_app_name("   ")))
         self.assertTrue(naming.is_valid_dsl_identifier(naming.suggest_app_name("---")))
 
+    def test_docker_safe_app_name_strips_underscores(self):
+        # A DSL-valid name (letters/digits/underscore) can still be a Docker/
+        # Tomcat-unsafe hostname component -- Tomcat's Host-header parser rejects
+        # "_" outright, silently breaking every server-to-GeoServer call.
+        self.assertEqual(naming.docker_safe_app_name("demo_tfm_qgis_1051"), "DemoTfmQgis1051")
+        self.assertNotIn("_", naming.docker_safe_app_name("demo_tfm_qgis_1051"))
+
+    def test_docker_safe_app_name_is_valid_dsl_identifier_too(self):
+        # Must satisfy both constraints at once: DSL-valid (this plugin's own
+        # requirement) and Docker-hostname-safe (letters/digits only covers both).
+        for raw in ["demo_tfm_qgis_1051", "My App", "App-Name_2", "", "  ", "123"]:
+            safe = naming.docker_safe_app_name(raw)
+            self.assertTrue(naming.is_valid_dsl_identifier(safe))
+            self.assertNotIn("_", safe)
+            self.assertNotIn("-", safe)
+
+    def test_docker_safe_app_name_empty_input(self):
+        self.assertEqual(naming.docker_safe_app_name(""), "App")
+
     def test_layer_source_basename_from_path(self):
         class FakeLayer:
             def source(self):

@@ -1005,7 +1005,9 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             QMessageBox.warning(self, "Output folder required", "Select an output folder before generating.")
             return
 
-        name = self.appNameEdit.text().strip()
+        # docker_safe_app_name, not the raw field: see its docstring for why a
+        # DSL-valid name can still break every server-to-GeoServer call.
+        name = naming.docker_safe_app_name(self.appNameEdit.text().strip())
         version = self.appVersionEdit.text().strip() or "1.0.0"
         try:
             # Written into output_dir itself, not the system temp dir: its own
@@ -1062,7 +1064,9 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             return
 
         deploy_type, fields = self.collect_deploy_fields()
-        name = self.appNameEdit.text().strip()
+        # docker_safe_app_name, not the raw field: see its docstring for why a
+        # DSL-valid name can still break every server-to-GeoServer call.
+        name = naming.docker_safe_app_name(self.appNameEdit.text().strip())
         version = self.appVersionEdit.text().strip() or "1.0.0"
 
         try:

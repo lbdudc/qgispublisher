@@ -85,6 +85,9 @@ def attribute_name(field_name):
 
 _VALID_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _NON_IDENTIFIER_CHARS = re.compile(r"[^A-Za-z0-9_]")
+# Stricter than _NON_IDENTIFIER_CHARS: also excludes underscore, for contexts
+# (docker_safe_app_name) where underscore itself is the unsafe character.
+_NON_ALNUM_CHAR = re.compile(r"[^A-Za-z0-9]")
 
 # dBase/shapefile DBF field names are limited to 10 characters.
 DBF_FIELD_NAME_MAX_LENGTH = 10
@@ -134,6 +137,38 @@ def suggest_app_name(name):
     if not ascii_name or ascii_name[0].isdigit():
         ascii_name = "App_" + ascii_name
     return ascii_name or "App"
+
+
+def docker_safe_app_name(name):
+    """The app name, transformed so it's safe to embed in Docker container names
+    and hostnames the generated docker-compose stack derives from it (the
+    project name becomes e.g. "<name>-geoserver", used as the Host header on
+    every server-to-GeoServer REST call).
+
+    A DSL-valid app name (see is_valid_dsl_identifier) is allowed to contain
+    underscores, but Tomcat's strict HTTP Host-header parser rejects any
+    hostname containing one outright (IllegalArgumentException: "The character
+    [_] is never valid in a domain name") -- silently breaking *every* call the
+    generated server makes to GeoServer, with no error surfaced anywhere except
+    the server's own logs, and no data or styles ever reaching GeoServer as a
+    result. Swapping underscores for hyphens doesn't help either: hyphens
+    aren't valid in a DSL identifier. The only character set safe for both is
+    letters and digits alone, so this removes every separator via camelCasing
+    (e.g. "demo_tfm_qgis_1051" -> "DemoTfmQgis1051") rather than substituting
+    one unsafe character for another.
+    """
+    # upper_camel_case's separator-collapsing regex needs a character *after*
+    # each separator run to consume it, so a trailing separator run (or an
+    # input that's separators only, e.g. "  ") can survive untouched -- strip
+    # whatever's left explicitly rather than assume the result is already
+    # alphanumeric-only.
+    camel = _NON_ALNUM_CHAR.sub("", upper_camel_case(name))
+    # upper_camel_case also doesn't guard against a leading digit (see its
+    # docstring); is_valid_dsl_identifier requires the result not start with
+    # one either way.
+    if not camel or camel[0].isdigit():
+        camel = "App" + camel
+    return camel
 
 
 def rename_map_for_fields(field_names, max_length=DBF_FIELD_NAME_MAX_LENGTH):
