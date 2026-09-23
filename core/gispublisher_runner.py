@@ -1,10 +1,10 @@
-import os, re, tempfile, pathlib, shutil, time, urllib.parse
+import dataclasses, json, os, re, tempfile, pathlib, shutil, time
 from qgis.PyQt.QtCore import QProcess, QUrl
 from qgis.PyQt.QtWidgets import QMessageBox
 from qgis.PyQt.QtGui import QDesktopServices
-from qgis.core import QgsMapLayer
+from qgis.core import QgsMapLayer, QgsProject
 from ..core.dependencies_checker import check_node_gispublisher
-from ..core import layer_export, model_discovery, shapefile_io
+from ..core import layer_export, model_discovery, naming, project_manifest, shapefile_io
 
 # Staging dirs created under the OS temp dir per run; never cleaned up automatically
 # by the OS, so the plugin sweeps stale ones on its own (see cleanup_old_temp_dirs).
@@ -103,30 +103,99 @@ class GISPublisherRunner:
         self.cancelled = False
         self.sld_results = []  # list of (layer_name, ok, message)
         self.export_results = []  # list of (layer_name, ok, message)
+        self.manifest_layer_entries = []  # list of project_manifest.build_layer_entry() dicts
+        self.group_dir_by_name = {}  # {original QGIS group name: staged dirname}, set by copy_layers_directly
         self.log_lines = []
         self._start_time = None
         self.resulting_host = ""
 
+    def _dest_dir_for(self, layer, tree_info, group_dir_by_name):
+        """Where `layer`'s staged file(s) belong: a group subdirectory (created
+        on first use) if it's inside a QGIS group, else self.temp_dir directly.
+        """
+        group = tree_info.get(layer.id(), {}).get("group")
+        if not group:
+            return self.temp_dir
+        dest_dir = os.path.join(self.temp_dir, group_dir_by_name[group])
+        os.makedirs(dest_dir, exist_ok=True)
+        return dest_dir
+
     def copy_layers_directly(self):
-        wms_urls = []
+        # Layer-tree position/visibility/group, keyed by QGIS layer id — a
+        # property of the tree, not of the layer itself, so it's collected
+        # once up front rather than re-derived per layer below. Never raises:
+        # a manifest is enrichment, not a requirement (see
+        # _write_project_manifest), and an empty dict here just means every
+        # manifest_layer_entries entry below falls back to "unknown".
+        try:
+            tree_info = project_manifest.describe_layer_tree(QgsProject.instance().layerTreeRoot())
+        except Exception:
+            tree_info = {}
+
+        # One staged subdirectory per top-level-or-nested QGIS group (its
+        # immediate parent group's name — see describe_layer_tree), so
+        # gispublisher's own directory scan (every staged subdirectory except
+        # "output" becomes its own CREATE SORTABLE MAP, see main.js's
+        # getDirectories) turns each group into its own map for free, with no
+        # CLI/DSL change. Group names are collected here, not from self.layers
+        # directly, so a group with every one of its layers unselected still
+        # gets a stable dirname — irrelevant in practice (nothing would be
+        # staged into it) but keeps this deterministic regardless of
+        # selection order. An ungrouped layer (tree_info has no "group", or
+        # the layer is missing from tree_info entirely) stays directly in
+        # self.temp_dir, exactly as before this existed.
+        group_names = []
+        for layer in self.layers:
+            group = tree_info.get(layer.id(), {}).get("group")
+            if group and group not in group_names:
+                group_names.append(group)
+        # Stashed on self, not just a local, so _write_project_manifest (called
+        # separately, after this method returns) can write the dirname ->
+        # original-group-name reverse lookup into the manifest — see
+        # project_manifest.build_manifest's group_dir_by_name param.
+        self.group_dir_by_name = naming.assign_group_dirnames(group_names)
+        group_dir_by_name = self.group_dir_by_name
+
         vector_layers = []
+        vector_descriptor_by_id = {}
+        local_raster_layers = []
+        raster_descriptor_by_id = {}
+        wms_requests = []
 
         for layer in self.layers:
             if layer.type() == QgsMapLayer.LayerType.RasterLayer:
-                source = layer.source()
-                # WMS layers include "url=" in their source string
-                if "url=" in source.lower():
-                    parts = dict(
-                        part.split("=", 1)
-                        for part in source.split("&")
-                        if "=" in part
-                    )
-                    url = parts.get("url") or parts.get("URL")
-                    if url:
-                        wms_urls.append(urllib.parse.unquote(url))
+                descriptor = layer_export.describe_raster(layer)
+                plan = layer_export.classify_raster(descriptor)
+                if plan.kind == layer_export.RASTER_KIND_LOCAL:
+                    local_raster_layers.append(layer)
+                    raster_descriptor_by_id[layer.id()] = descriptor
+                elif plan.kind == layer_export.RASTER_KIND_WMS:
+                    wms_requests.append(plan.wms_request)
+                    if plan.message:
+                        self.log_lines.append(f"[WARN] {layer.name()}: {plan.message}")
+                    self.export_results.append((layer.name(), True, ""))
+                else:  # RASTER_KIND_REJECTED — every layer gets an export_results
+                    # entry, including this one, so a skipped layer is never silently
+                    # absent from the run's outcome.
+                    self.export_results.append((layer.name(), False, plan.message))
                 continue
             if layer.type() == QgsMapLayer.LayerType.VectorLayer:
                 vector_layers.append(layer)
+                vector_descriptor_by_id[layer.id()] = layer_export.describe_layer(layer)
+
+        # Vector layers and local rasters share ONE staged-basename namespace,
+        # computed in the order layers appear in self.layers, so a raster and a
+        # vector that would otherwise collide (e.g. "roads.tif" next to "roads.shp")
+        # never overwrite each other in the flat temp dir — see
+        # naming.assign_staged_basenames.
+        basename_candidates = []
+        for layer in self.layers:
+            descriptor = vector_descriptor_by_id.get(layer.id()) or raster_descriptor_by_id.get(layer.id())
+            if descriptor is not None:
+                basename_candidates.append(
+                    (descriptor.layer_id, naming.preferred_basename_from_source(descriptor.name, descriptor.source))
+                )
+        basename_by_id = naming.assign_staged_basenames(basename_candidates)
 
         # Every vector layer is exported through QgsVectorFileWriter (not just the
         # ones that already are shapefiles) so GeoPackage/PostGIS/memory sources
@@ -134,25 +203,38 @@ class GISPublisherRunner:
         # warned about, and the plugin — not layer.source() — picks the staged
         # basename, so two layers that would otherwise collide never overwrite each
         # other in the flat temp dir.
-        descriptors = [layer_export.describe_layer(layer) for layer in vector_layers]
-        plans = layer_export.plan_exports(descriptors, self.target_crs)
+        vector_descriptors = [vector_descriptor_by_id[layer.id()] for layer in vector_layers]
+        plans = layer_export.plan_exports(vector_descriptors, self.target_crs, basename_by_id=basename_by_id)
         plan_by_id = {plan.layer_id: plan for plan in plans}
 
-        for layer, descriptor in zip(vector_layers, descriptors):
+        for layer, descriptor in zip(vector_layers, vector_descriptors):
             plan = plan_by_id[layer.id()]
-            ok, message = layer_export.export_layer(layer, plan, self.temp_dir, self.target_crs)
+            dest_dir = self._dest_dir_for(layer, tree_info, group_dir_by_name)
+            ok, message = layer_export.export_layer(layer, plan, dest_dir, self.target_crs)
             self.export_results.append((layer.name(), ok, message))
             if not ok:
                 continue
             for code in plan.warnings:
                 self.log_lines.append(f"[WARN] {layer.name()}: {code}")
 
+            # See project_manifest.remap_field_aliases: an alias for a field
+            # that also needed a DBF-safe rename must be re-keyed to match,
+            # or gispublisher would look it up under a name that no longer
+            # exists in the staged file.
+            manifest_descriptor = dataclasses.replace(
+                descriptor,
+                field_aliases=project_manifest.remap_field_aliases(descriptor.field_aliases, plan.rename_map),
+            )
+            self.manifest_layer_entries.append(project_manifest.build_layer_entry(
+                manifest_descriptor, plan.staged_basename, tree_info.get(layer.id())
+            ))
+
             field_names = list(descriptor.field_names)
-            staged_dbf = os.path.join(self.temp_dir, plan.staged_basename + ".dbf")
+            staged_dbf = os.path.join(dest_dir, plan.staged_basename + ".dbf")
             if plan.rename_map and os.path.isfile(staged_dbf):
                 shapefile_io.rewrite_dbf_field_names(staged_dbf, field_names, plan.rename_map)
 
-            dest_sld = os.path.join(self.temp_dir, plan.staged_basename + ".sld")
+            dest_sld = os.path.join(dest_dir, plan.staged_basename + ".sld")
             sld_ok, sld_message = _export_sld(layer, dest_sld)
             self.sld_results.append((layer.name(), sld_ok, sld_message))
             if sld_ok:
@@ -160,10 +242,34 @@ class GISPublisherRunner:
                     shapefile_io.rewrite_sld_field_references(dest_sld, plan.sld_rename_map)
                 shapefile_io.rewrite_unsupported_marks(dest_sld)
 
-        if wms_urls:
+        for layer in local_raster_layers:
+            staged_basename = basename_by_id[layer.id()]
+            dest_dir = self._dest_dir_for(layer, tree_info, group_dir_by_name)
+            ok, message = layer_export.export_raster(layer, staged_basename, dest_dir)
+            self.export_results.append((layer.name(), ok, message))
+            if ok:
+                self.manifest_layer_entries.append(project_manifest.build_layer_entry(
+                    raster_descriptor_by_id[layer.id()], staged_basename, tree_info.get(layer.id())
+                ))
+
+        if wms_requests:
+            # urls.wms keeps its original bare-URL-per-line shape (deduplicated) so a
+            # reader that doesn't understand the sidecar still works exactly as
+            # before, publishing every layer the service advertises. urls.wms.json
+            # is additive: a reader that looks for it can scope each service down to
+            # just the sublayer(s) actually picked; see WmsProcessor.js.
+            seen_urls = []
+            for request in wms_requests:
+                if request["url"] not in seen_urls:
+                    seen_urls.append(request["url"])
+
             wms_file = os.path.join(self.temp_dir, "urls.wms")
             with open(wms_file, "w", encoding="utf-8") as f:
-                f.write("\n".join(wms_urls))
+                f.write("\n".join(seen_urls))
+
+            sidecar_file = wms_file + ".json"
+            with open(sidecar_file, "w", encoding="utf-8") as f:
+                json.dump(wms_requests, f)
 
     def copy_chart_folder(self):
         if self.chart_folder and os.path.exists(self.chart_folder):
@@ -188,6 +294,28 @@ class GISPublisherRunner:
                     f"[WARN] Could not stage model '{entry.display_name}' ({entry.source})"
                 )
 
+    def _write_project_manifest(self):
+        """Stage qgis-project.json (see core.project_manifest and
+        gispublisher/src/manifest-util.js) into the root of the temp dir,
+        alongside the layers copy_layers_directly() just staged.
+
+        Deliberately never lets a manifest problem abort the run — an older
+        gispublisher CLI ignores the file entirely (it isn't a recognized
+        geographic extension), and a newer one treats a missing/malformed
+        manifest as "nothing extra to apply", so the worst case here is
+        exactly today's behaviour, not a broken run.
+        """
+        try:
+            project_info = project_manifest.describe_project()
+            if not project_info.get("extent"):
+                project_info["extent"] = project_manifest.layers_extent_wgs84(self.layers)
+            manifest = project_manifest.build_manifest(
+                project_info, self.manifest_layer_entries, self.group_dir_by_name
+            )
+            project_manifest.write_manifest(self.temp_dir, manifest)
+        except Exception as e:
+            self.log_lines.append(f"[WARN] Could not write QGIS project manifest: {e}")
+
     def start(self, generate=False, config_path=None):
         gispub_path = check_node_gispublisher()
         args = []
@@ -195,6 +323,7 @@ class GISPublisherRunner:
         self.generate = generate
         self._start_time = time.time()
         self.copy_layers_directly()
+        self._write_project_manifest()
         self.copy_chart_folder()
         self.copy_model_folder()
 
@@ -203,6 +332,19 @@ class GISPublisherRunner:
             args.append(shapefiles_folder)
             args.append("-g")
             working_dir = self.output_dir
+            if config_path:
+                # Passing a config here is what makes the App name/Version
+                # fields actually reach the CLI on a generate run — without
+                # it, gispublisher falls back to its own default config.json
+                # ("test"/"2.0.0"). Its own --config resolution is
+                # cwd-relative with no absolute-path support, so the config
+                # must live in (and cwd must be) the same directory — which
+                # build_deploy_config's dest_dir already arranges to be
+                # output_dir, so this ends up unchanged in practice.
+                config_path = pathlib.Path(config_path)
+                args.append("--config")
+                args.append(config_path.name)
+                working_dir = str(config_path.parent)
         elif config_path:  # deploy
             shapefiles_folder = self.temp_dir
             config_path = pathlib.Path(config_path)
@@ -299,25 +441,41 @@ class GISPublisherRunner:
         msg_box.setDetailedText("\n".join(self.log_lines))
         msg_box.exec()
 
+    def failed_export_layers(self):
+        """Layers whose export_results entry recorded a failure — dropped rasters,
+        rejected providers, and export errors alike. Checked by finished()/
+        show_success_popup() so a run where some layers didn't make it in is never
+        reported as a bare, unqualified success.
+        """
+        return [(name, message) for name, ok, message in self.export_results if not ok]
+
     def show_success_popup(self):
+        failed = self.failed_export_layers()
+
         if self.debug:
-            self.progress_label.setText("GISPublisher finished ✅")
+            label = "GISPublisher finished ✅" if not failed else f"GISPublisher finished with {len(failed)} warning(s) ⚠️"
+            self.progress_label.setText(label)
             self.output_text.appendPlainText("\n> Process completed successfully.")
             return
 
         msg_box = QMessageBox(self.parent)
-        msg_box.setIcon(QMessageBox.Icon.Information)
+        msg_box.setIcon(QMessageBox.Icon.Information if not failed else QMessageBox.Icon.Warning)
         msg_box.setWindowTitle("Process completed")
 
         if self.generate:
-            msg_box.setText("The application was generated successfully.")
+            text = "The application was generated successfully."
             open_button = msg_box.addButton("Open folder", QMessageBox.ButtonRole.ActionRole)
         else:
             text = "Deployment completed successfully."
             if self.resulting_host:
                 text += f"\n\nThe application is available at:\n{self.resulting_host}"
-            msg_box.setText(text)
             open_button = None
+
+        if failed:
+            text += f"\n\n{len(failed)} layer(s) were not published:\n" + "\n".join(
+                f"- {name}: {message}" for name, message in failed
+            )
+        msg_box.setText(text)
 
         msg_box.addButton(QMessageBox.StandardButton.Ok)
         msg_box.exec()
@@ -339,9 +497,13 @@ class GISPublisherRunner:
             if self.output_text:
                 self.output_text.appendPlainText("\n> Process cancelled by user.")
         elif exitCode == 0:
+            failed = self.failed_export_layers()
             self.progress_bar.setValue(100)
             self.progress_bar.setStyleSheet("")
-            self.progress_label.setText("GISPublisher finished ✅")
+            if failed:
+                self.progress_label.setText(f"GISPublisher finished with {len(failed)} warning(s) ⚠️")
+            else:
+                self.progress_label.setText("GISPublisher finished ✅")
             if self.output_text:
                 self.output_text.appendPlainText("\n> Process completed successfully.")
             self.show_success_popup()

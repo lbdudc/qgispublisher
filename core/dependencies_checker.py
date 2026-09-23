@@ -1,7 +1,15 @@
+import json
 import os
+import re
 import subprocess
 import sys
 import shutil
+
+# The CLI version this plugin is known to work against — bump this whenever a
+# gispublisher/mini-lps/gisdsl change the plugin depends on is published, so an
+# out-of-date CLI is flagged rather than failing (or silently misbehaving) deep
+# inside the generation run.
+REQUIRED_CLI_VERSION = "1.1.5"
 
 
 def _windows_full_path():
@@ -166,3 +174,127 @@ def find_gispublisher():
     raise Exception(
         "GISPublisher is not installed. Run: npm install -g @lbdudc/gis-publisher"
     )
+
+
+def get_installed_gispublisher_version(gispub_path):
+    """Best-effort installed @lbdudc/gis-publisher version.
+
+    Reads straight from the package's own package.json where possible (cheap,
+    no subprocess), falling back to spawning `gispub_path --version` — which is
+    what the CLI itself answers with, wired automatically by meow's
+    `importMeta` (gispublisher/src/cli.js). Returns None rather than raising:
+    an unknown installed version shouldn't block the rest of check_requirements.
+    """
+    candidates = []
+    try:
+        prefix = get_npm_prefix()
+        if sys.platform == "win32":
+            candidates.append(os.path.join(prefix, "node_modules", "@lbdudc", "gis-publisher", "package.json"))
+        else:
+            candidates.append(os.path.join(prefix, "lib", "node_modules", "@lbdudc", "gis-publisher", "package.json"))
+    except Exception:  # nosec B110 - fall through to the next candidate
+        pass
+
+    try:
+        # Deferred import: deploy_config imports find_npm from this module, so a
+        # module-level import here would be circular.
+        from .deploy_config import get_gispublisher_root
+        candidates.append(os.path.join(str(get_gispublisher_root()), "package.json"))
+    except Exception:  # nosec B110
+        pass
+
+    for path in candidates:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                version = json.load(f).get("version")
+            if version:
+                return version
+        except Exception:  # nosec B112 - try the next candidate / final fallback
+            continue
+
+    try:
+        kwargs = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        result = subprocess.run(  # nosec B603 - gispub_path is a fully-resolved path from find_gispublisher()
+            [gispub_path, "--version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=20,
+            **kwargs,
+        )
+        version = result.stdout.strip()
+        if version:
+            return version
+    except Exception:  # nosec B110 - version stays unknown, not fatal
+        pass
+
+    return None
+
+
+_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+")
+
+
+def compare_versions(a, b):
+    """Compare two dotted version strings (any prerelease/build suffix is
+    ignored). Returns -1, 0 or 1. Returns None if either string doesn't parse
+    as a version, so callers can tell "unknown" apart from "equal"."""
+
+    def _parse(v):
+        if not v:
+            return None
+        match = _VERSION_RE.match(v.strip())
+        if not match:
+            return None
+        return tuple(int(p) for p in match.group(0).split("."))
+
+    parsed_a, parsed_b = _parse(a), _parse(b)
+    if parsed_a is None or parsed_b is None:
+        return None
+    if parsed_a < parsed_b:
+        return -1
+    if parsed_a > parsed_b:
+        return 1
+    return 0
+
+
+def get_latest_gispublisher_version(timeout=20):
+    """Ask npm for the latest published @lbdudc/gis-publisher version.
+
+    Raises on any failure (offline, npm missing, timeout) — this is meant to be
+    run from a background thread whose caller swallows the error silently, since
+    QGIS is frequently used offline and a failed *update check* is not itself a
+    problem worth interrupting the user over.
+    """
+    npm_path = find_npm()
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    result = subprocess.run(  # nosec B603 - npm_path is a fully-resolved path from shutil.which()
+        [npm_path, "view", "@lbdudc/gis-publisher", "version"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=timeout,
+        **kwargs,
+    )
+    if result.returncode != 0:
+        raise Exception(f"npm view failed: {(result.stderr or '').strip() or result.returncode}")
+    version = result.stdout.strip()
+    if not version:
+        raise Exception("npm view returned no version.")
+    return version
+
+
+UPDATE_CHECK_INTERVAL_SECONDS = 24 * 60 * 60
+
+
+def should_check_for_update(last_check_epoch, now_epoch, interval_seconds=UPDATE_CHECK_INTERVAL_SECONDS):
+    """Pure decision behind the "at most once every 24h" background npm check —
+    kept separate from the QgsSettings read/write around it so it's covered by
+    the QGIS-free test suite. `last_check_epoch` of None/0 (never checked) always
+    returns True."""
+    if not last_check_epoch:
+        return True
+    return (now_epoch - last_check_epoch) >= interval_seconds

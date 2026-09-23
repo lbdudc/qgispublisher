@@ -83,6 +83,42 @@ class NamingTests(unittest.TestCase):
         self.assertEqual(len(renamed), 2)
         self.assertNotEqual(renamed["1a"], renamed["-1a"])
 
+    def test_suggest_app_name_leaves_valid_names_untouched_semantically(self):
+        self.assertTrue(naming.is_valid_dsl_identifier(naming.suggest_app_name("MyApp")))
+
+    def test_suggest_app_name_fixes_spaces_and_punctuation(self):
+        # A QGIS project title is a realistic input: spaces, punctuation, mixed case.
+        result = naming.suggest_app_name("Health Centers - A Coruña (2024)")
+        self.assertTrue(naming.is_valid_dsl_identifier(result))
+
+    def test_suggest_app_name_fixes_leading_digit(self):
+        result = naming.suggest_app_name("2024 Census")
+        self.assertTrue(naming.is_valid_dsl_identifier(result))
+
+    def test_suggest_app_name_empty_input(self):
+        self.assertTrue(naming.is_valid_dsl_identifier(naming.suggest_app_name("")))
+        self.assertTrue(naming.is_valid_dsl_identifier(naming.suggest_app_name("   ")))
+        self.assertTrue(naming.is_valid_dsl_identifier(naming.suggest_app_name("---")))
+
+    def test_docker_safe_app_name_strips_underscores(self):
+        # A DSL-valid name (letters/digits/underscore) can still be a Docker/
+        # Tomcat-unsafe hostname component -- Tomcat's Host-header parser rejects
+        # "_" outright, silently breaking every server-to-GeoServer call.
+        self.assertEqual(naming.docker_safe_app_name("demo_tfm_qgis_1051"), "DemoTfmQgis1051")
+        self.assertNotIn("_", naming.docker_safe_app_name("demo_tfm_qgis_1051"))
+
+    def test_docker_safe_app_name_is_valid_dsl_identifier_too(self):
+        # Must satisfy both constraints at once: DSL-valid (this plugin's own
+        # requirement) and Docker-hostname-safe (letters/digits only covers both).
+        for raw in ["demo_tfm_qgis_1051", "My App", "App-Name_2", "", "  ", "123"]:
+            safe = naming.docker_safe_app_name(raw)
+            self.assertTrue(naming.is_valid_dsl_identifier(safe))
+            self.assertNotIn("_", safe)
+            self.assertNotIn("-", safe)
+
+    def test_docker_safe_app_name_empty_input(self):
+        self.assertEqual(naming.docker_safe_app_name(""), "App")
+
     def test_layer_source_basename_from_path(self):
         class FakeLayer:
             def source(self):
@@ -140,6 +176,38 @@ class NamingTests(unittest.TestCase):
             ("a", "data"), ("b", "data"), ("c", "roads"),
         ])
         self.assertEqual(result, {"a": "data", "b": "data_2", "c": "roads"})
+
+    def test_dsl_safe_identifier_keeps_valid_names(self):
+        self.assertEqual(naming.dsl_safe_identifier("Administrativo"), "Administrativo")
+
+    def test_dsl_safe_identifier_replaces_spaces_and_punctuation(self):
+        self.assertEqual(naming.dsl_safe_identifier("Salud Pública"), "Salud_Publica")
+
+    def test_dsl_safe_identifier_strips_diacritics(self):
+        self.assertEqual(naming.dsl_safe_identifier("Água"), "Agua")
+
+    def test_dsl_safe_identifier_digit_first_gets_prefixed(self):
+        result = naming.dsl_safe_identifier("2024 Layers")
+        self.assertTrue(naming.is_valid_dsl_identifier(result))
+        self.assertTrue(result.startswith("g_"))
+
+    def test_dsl_safe_identifier_empty_input_falls_back_to_prefix(self):
+        self.assertEqual(naming.dsl_safe_identifier(""), "g")
+        self.assertEqual(naming.dsl_safe_identifier("###"), "g")
+
+    def test_dsl_safe_identifier_custom_prefix(self):
+        result = naming.dsl_safe_identifier("1", fallback_prefix="group")
+        self.assertTrue(result.startswith("group_"))
+
+    def test_assign_group_dirnames_dedupes_after_stripping_diacritics(self):
+        # "Água" and "Agua" both normalize to the same identifier.
+        result = naming.assign_group_dirnames(["Água", "Agua", "Salud"])
+        self.assertEqual(result, {"Água": "Agua", "Agua": "Agua_2", "Salud": "Salud"})
+
+    def test_assign_group_dirnames_is_dsl_valid_for_every_result(self):
+        result = naming.assign_group_dirnames(["Grupo 1", "Grupo 2", ""])
+        for dirname in result.values():
+            self.assertTrue(naming.is_valid_dsl_identifier(dirname))
 
 
 if __name__ == "__main__":

@@ -12,6 +12,20 @@ import xml.etree.ElementTree as ET
 
 _XML_DECL_RE = re.compile(r"^\s*<\?xml[^>]*\?>\s*")
 _XMLNS_DECL_RE = re.compile(r'xmlns:([A-Za-z_][\w.-]*)="([^"]*)"')
+# The *default* (unprefixed) namespace declaration — QGIS's own SLD export always
+# uses this form for the SLD namespace itself (``xmlns="http://www.opengis.net/sld"``
+# on the root element, with NamedLayer/UserStyle/Rule/... left unprefixed). The
+# `\b` + literal "xmlns=" only matches when there's no colon in between, so this
+# never doubles up with _XMLNS_DECL_RE above.
+_DEFAULT_XMLNS_DECL_RE = re.compile(r'\bxmlns="([^"]*)"')
+# xml.etree.ElementTree reserves any "nsN" prefix (N = digits) for its own
+# auto-generated namespace prefixes: ET.register_namespace() raises
+# ValueError("Prefix format reserved for internal use") if asked to register
+# one explicitly. QGIS's own SLD export can emit exactly this kind of
+# auto-generated prefix for some symbology (embedded SVG markers/graphics), so
+# _rewrite_element_text skips registering those rather than letting a staged
+# layer's own style crash the whole run.
+_RESERVED_NS_PREFIX_RE = re.compile(r"^ns\d+$")
 _PROPERTY_NAME_LOCALNAMES = {"PropertyName"}
 _WELL_KNOWN_NAME_LOCALNAMES = {"WellKnownName"}
 
@@ -143,7 +157,27 @@ def _rewrite_element_text(text, localnames, value_map):
     decl_match = _XML_DECL_RE.match(text)
     xml_decl = decl_match.group(0) if decl_match else ""
 
+    # Without this, ET.tostring() below has no idea the SLD namespace was meant to
+    # stay unprefixed, auto-assigns it "ns0" (or whatever the next free slot is),
+    # and rewrites every NamedLayer/UserStyle/Rule/... element with that prefix —
+    # a real, silent SLD corruption, not just a cosmetic difference, whenever any
+    # rewrite in this function actually changes something. Must be registered
+    # *before* the explicit-prefix loop below: an unprefixed declaration doesn't
+    # collide with `xmlns:foo="..."` ones (see _DEFAULT_XMLNS_DECL_RE), but if a
+    # document somehow declared the same URI both ways, the later, explicit
+    # registration should win, matching what a reader would see as "the" prefix.
+    default_match = _DEFAULT_XMLNS_DECL_RE.search(text)
+    if default_match:
+        ET.register_namespace("", default_match.group(1))
+
     for prefix, uri in _XMLNS_DECL_RE.findall(text):
+        # See _RESERVED_NS_PREFIX_RE: registering this prefix would raise.
+        # Local-name matching below doesn't depend on which prefix a namespace
+        # keeps, so skipping it only changes what ET.tostring() prints for
+        # *this* namespace in the re-serialized output, never what gets found
+        # or rewritten.
+        if _RESERVED_NS_PREFIX_RE.match(prefix):
+            continue
         ET.register_namespace(prefix, uri)
 
     try:

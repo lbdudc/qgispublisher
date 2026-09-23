@@ -85,6 +85,9 @@ def attribute_name(field_name):
 
 _VALID_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _NON_IDENTIFIER_CHARS = re.compile(r"[^A-Za-z0-9_]")
+# Stricter than _NON_IDENTIFIER_CHARS: also excludes underscore, for contexts
+# (docker_safe_app_name) where underscore itself is the unsafe character.
+_NON_ALNUM_CHAR = re.compile(r"[^A-Za-z0-9]")
 
 # dBase/shapefile DBF field names are limited to 10 characters.
 DBF_FIELD_NAME_MAX_LENGTH = 10
@@ -117,6 +120,55 @@ def safe_field_name(field_name, max_length=DBF_FIELD_NAME_MAX_LENGTH):
     if not ascii_name or ascii_name[0].isdigit():
         ascii_name = "f" + ascii_name
     return ascii_name[:max_length] or "field"
+
+
+def suggest_app_name(name):
+    """A DSL-safe suggestion for an invalid application name.
+
+    gispublisher's dsl-util.js interpolates config.name directly into
+    ``CREATE GIS <name> USING 4326;`` with no sanitization at all, so a name with
+    spaces or punctuation (e.g. a QGIS project title) produces invalid DSL and the
+    run fails deep inside the CLI's ANTLR parser. Used by the plugin to offer a
+    fix-up rather than let that happen; unlike safe_field_name, there's no length
+    limit to enforce here (DBF's 10-character cap doesn't apply to an app name).
+    """
+    ascii_name = normalize_diacritics(name or "")
+    ascii_name = _NON_IDENTIFIER_CHARS.sub("_", ascii_name).strip("_")
+    if not ascii_name or ascii_name[0].isdigit():
+        ascii_name = "App_" + ascii_name
+    return ascii_name or "App"
+
+
+def docker_safe_app_name(name):
+    """The app name, transformed so it's safe to embed in Docker container names
+    and hostnames the generated docker-compose stack derives from it (the
+    project name becomes e.g. "<name>-geoserver", used as the Host header on
+    every server-to-GeoServer REST call).
+
+    A DSL-valid app name (see is_valid_dsl_identifier) is allowed to contain
+    underscores, but Tomcat's strict HTTP Host-header parser rejects any
+    hostname containing one outright (IllegalArgumentException: "The character
+    [_] is never valid in a domain name") -- silently breaking *every* call the
+    generated server makes to GeoServer, with no error surfaced anywhere except
+    the server's own logs, and no data or styles ever reaching GeoServer as a
+    result. Swapping underscores for hyphens doesn't help either: hyphens
+    aren't valid in a DSL identifier. The only character set safe for both is
+    letters and digits alone, so this removes every separator via camelCasing
+    (e.g. "demo_tfm_qgis_1051" -> "DemoTfmQgis1051") rather than substituting
+    one unsafe character for another.
+    """
+    # upper_camel_case's separator-collapsing regex needs a character *after*
+    # each separator run to consume it, so a trailing separator run (or an
+    # input that's separators only, e.g. "  ") can survive untouched -- strip
+    # whatever's left explicitly rather than assume the result is already
+    # alphanumeric-only.
+    camel = _NON_ALNUM_CHAR.sub("", upper_camel_case(name))
+    # upper_camel_case also doesn't guard against a leading digit (see its
+    # docstring); is_valid_dsl_identifier requires the result not start with
+    # one either way.
+    if not camel or camel[0].isdigit():
+        camel = "App" + camel
+    return camel
 
 
 def rename_map_for_fields(field_names, max_length=DBF_FIELD_NAME_MAX_LENGTH):
@@ -218,6 +270,48 @@ def assign_staged_basenames(candidates):
         name = staged_basename(preferred, used)
         used.add(name)
         result[key] = name
+    return result
+
+
+def dsl_safe_identifier(name, fallback_prefix="g"):
+    """A DSL-safe (letters/digits/underscore, not digit-first) identifier
+    derived from an arbitrary QGIS group name, for use as a staged
+    subdirectory name — the CLI treats a staged subfolder's basename as a
+    `CREATE SORTABLE MAP <identifier>` DSL identifier directly (see
+    gispublisher's `main.js`: `path.basename(entryPath)`), so this has to be
+    both filesystem-safe *and* DSL-identifier-safe, unlike a plain staged
+    layer basename. Mirrors `suggest_app_name`'s approach (diacritics
+    stripped, unsafe characters collapsed to underscore) but with a neutral
+    fallback prefix instead of "App_", since this never reaches the user as
+    an app name.
+    """
+    ascii_name = normalize_diacritics(name or "")
+    ascii_name = _NON_IDENTIFIER_CHARS.sub("_", ascii_name).strip("_")
+    if not ascii_name:
+        return fallback_prefix
+    if ascii_name[0].isdigit():
+        ascii_name = f"{fallback_prefix}_{ascii_name}"
+    return ascii_name
+
+
+def assign_group_dirnames(group_names):
+    """The single authority for "what subdirectory will this QGIS group's
+    layers be staged under" — `group_names` is an ordered iterable of the
+    *distinct* group names actually in use (e.g. from
+    `project_manifest.describe_layer_tree`'s `group` values, deduplicated in
+    first-seen order). Returns `{group_name: dirname}`, each dirname a
+    `dsl_safe_identifier` deduplicated case-insensitively against its
+    siblings via the same collision-avoidance rule as
+    `assign_staged_basenames` (a QGIS project can easily have two group names
+    that collapse to the same identifier once diacritics/punctuation are
+    stripped, e.g. "Água" and "Agua").
+    """
+    used = set()
+    result = {}
+    for name in group_names:
+        dirname = staged_basename(dsl_safe_identifier(name), used)
+        used.add(dirname)
+        result[name] = dirname
     return result
 
 

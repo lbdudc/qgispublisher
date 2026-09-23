@@ -43,8 +43,11 @@ def save_project_selection(project, selection):
 
     `selection` keys (all optional): layer_ids (list[str]), model_ids (list[str]),
     chart_folder (str), chart_files (list[str] or None), model_folder (str),
-    output_dir (str), action ("generate"/"deploy"), deploy_type (str).
+    output_dir (str), action ("generate"/"deploy"), deploy_type (str),
+    app_name (str), app_version (str).
     """
+    project.writeEntry(SCOPE, "app_name", selection.get("app_name") or "")
+    project.writeEntry(SCOPE, "app_version", selection.get("app_version") or "")
     project.writeEntry(SCOPE, "layers", list(selection.get("layer_ids") or []))
     project.writeEntry(SCOPE, "models", list(selection.get("model_ids") or []))
     project.writeEntry(SCOPE, "chart_folder", selection.get("chart_folder") or "")
@@ -70,6 +73,8 @@ def load_project_selection(project):
     treat an entirely-empty result as "nothing saved yet" and keep their own default
     behaviour (e.g. select every layer).
     """
+    app_name, _ = project.readEntry(SCOPE, "app_name", "")
+    app_version, _ = project.readEntry(SCOPE, "app_version", "")
     layer_ids, _ = project.readListEntry(SCOPE, "layers", [])
     model_ids, _ = project.readListEntry(SCOPE, "models", [])
     chart_folder, _ = project.readEntry(SCOPE, "chart_folder", "")
@@ -81,6 +86,8 @@ def load_project_selection(project):
     deploy_type, _ = project.readEntry(SCOPE, "deploy_type", "local")
 
     return {
+        "app_name": app_name,
+        "app_version": app_version,
         "layer_ids": list(layer_ids),
         "model_ids": list(model_ids),
         "chart_folder": chart_folder,
