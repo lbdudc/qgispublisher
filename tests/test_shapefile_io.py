@@ -137,6 +137,20 @@ class RewriteSldTextTests(unittest.TestCase):
         self.assertFalse(changed)
         self.assertEqual(new_text, "<not-xml")
 
+    def test_doctype_rejected_without_parsing(self):
+        # Entity-expansion attacks (billion laughs, quadratic blowup) require
+        # a DOCTYPE to declare their custom ENTITYs — QGIS's own SLD export
+        # never emits one, so this is rejected the same way invalid XML is
+        # (unchanged, no raise) rather than ever reaching ET.fromstring().
+        bomb = (
+            '<?xml version="1.0"?>'
+            "<!DOCTYPE lolz [<!ENTITY lol \"lol\"><!ENTITY lol2 \"&lol;&lol;&lol;\">]>"
+            "<Rule><PropertyName>&lol2;</PropertyName></Rule>"
+        )
+        changed, new_text = shapefile_io._rewrite_sld_text(bomb, {"a": "b"})
+        self.assertFalse(changed)
+        self.assertEqual(new_text, bomb)
+
     def test_reserved_nsN_namespace_prefix_does_not_raise(self):
         # xml.etree.ElementTree.register_namespace() raises ValueError
         # ("Prefix format reserved for internal use") for any "nsN" prefix —

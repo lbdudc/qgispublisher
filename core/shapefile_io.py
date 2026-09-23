@@ -8,9 +8,16 @@ covered directly by tests/test_shapefile_io.py without a QGIS runtime.
 import os
 import re
 import struct
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # nosec B405 - the one fromstring() call site rejects any DOCTYPE first; see _DOCTYPE_RE
 
 _XML_DECL_RE = re.compile(r"^\s*<\?xml[^>]*\?>\s*")
+# A DOCTYPE is required syntax for the classic XML entity-expansion attacks
+# (billion laughs, quadratic blowup) — both declare their custom ENTITYs
+# inside one. QGIS's own SLD export never emits a DOCTYPE, so rejecting any
+# input that has one is a free, dependency-free mitigation (see
+# _rewrite_element_text's early-return on a match) instead of pulling in
+# defusedxml as a hard runtime dependency for a QGIS plugin.
+_DOCTYPE_RE = re.compile(r"<!DOCTYPE", re.IGNORECASE)
 _XMLNS_DECL_RE = re.compile(r'xmlns:([A-Za-z_][\w.-]*)="([^"]*)"')
 # The *default* (unprefixed) namespace declaration — QGIS's own SLD export always
 # uses this form for the SLD namespace itself (``xmlns="http://www.opengis.net/sld"``
@@ -180,8 +187,11 @@ def _rewrite_element_text(text, localnames, value_map):
             continue
         ET.register_namespace(prefix, uri)
 
+    if _DOCTYPE_RE.search(text):
+        return False, text
+
     try:
-        root = ET.fromstring(text)
+        root = ET.fromstring(text)  # nosec B314 - DOCTYPE rejected above, closing off entity-expansion attacks
     except ET.ParseError:
         return False, text
 
