@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.1] - 2026-09-23
+
+### Added
+- **The UI no longer freezes on Generate/Deploy.** Node.js/GISPublisher requirement checks now run off the UI thread (previously several npm/node subprocess calls ran synchronously on every dialog open and before every run), and the progress dialog now shows live per-layer progress during staging instead of sitting frozen until the CLI process starts.
+- **Run History is now a standalone window** (new "History" button), and now covers Generate runs too, not just Deploy — a Generate run's log used to disappear once its progress dialog closed. Open/Restore settings/View log/Clear actions all moved with it; "View log" is now a resizable window instead of a barely-resizable `QMessageBox` popup.
+- **The Layers tab is a table** (Layer/Type/Features/CRS/Group columns, with a "Show details" toggle) instead of a plain name list, built from the same per-layer checks (CRS/feature count/geometry/field count) the export itself uses — flagged issues now also show up in the pre-run confirm dialog, not only as a tooltip.
+- **"Test connection" (SSH) / "Test credentials" (AWS) buttons** on the Deploy page check reachability/credentials up front, instead of only failing after committing to a multi-minute deploy attempt.
+- AWS region and instance type are now dropdowns with common values pre-populated, instead of bare free-text fields.
+- Right-click a chart file (Charts tab) to rename or delete it.
+- Ctrl+Enter (Run) / Ctrl+H (History) keyboard shortcuts.
+
+### Fixed
+- The AWS deploy page no longer leaves blank space under the Generate/Local/SSH views by reserving height for its own (much taller) page.
+- Deploy secrets (AWS/SSH credentials) written to a temporary config file are now written with 0600 permissions on POSIX, and cleanup is crash-proof — a failed delete no longer silently skips recording the run in History.
+- A couple of previously-silent failures (QGIS layer-tree read errors, a model whose parameters can't be read) now report what went wrong instead of failing blank.
+
+### Internal
+- 39 new unit tests covering `deploy_config`, `state_store` and `model_discovery` (132 → 171).
+
 ## [0.3.0] - 2026-09-17
 
 ### Added
