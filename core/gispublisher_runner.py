@@ -104,9 +104,21 @@ class GISPublisherRunner:
         self.sld_results = []  # list of (layer_name, ok, message)
         self.export_results = []  # list of (layer_name, ok, message)
         self.manifest_layer_entries = []  # list of project_manifest.build_layer_entry() dicts
+        self.group_dir_by_name = {}  # {original QGIS group name: staged dirname}, set by copy_layers_directly
         self.log_lines = []
         self._start_time = None
         self.resulting_host = ""
+
+    def _dest_dir_for(self, layer, tree_info, group_dir_by_name):
+        """Where `layer`'s staged file(s) belong: a group subdirectory (created
+        on first use) if it's inside a QGIS group, else self.temp_dir directly.
+        """
+        group = tree_info.get(layer.id(), {}).get("group")
+        if not group:
+            return self.temp_dir
+        dest_dir = os.path.join(self.temp_dir, group_dir_by_name[group])
+        os.makedirs(dest_dir, exist_ok=True)
+        return dest_dir
 
     def copy_layers_directly(self):
         # Layer-tree position/visibility/group, keyed by QGIS layer id — a
@@ -119,6 +131,30 @@ class GISPublisherRunner:
             tree_info = project_manifest.describe_layer_tree(QgsProject.instance().layerTreeRoot())
         except Exception:
             tree_info = {}
+
+        # One staged subdirectory per top-level-or-nested QGIS group (its
+        # immediate parent group's name — see describe_layer_tree), so
+        # gispublisher's own directory scan (every staged subdirectory except
+        # "output" becomes its own CREATE SORTABLE MAP, see main.js's
+        # getDirectories) turns each group into its own map for free, with no
+        # CLI/DSL change. Group names are collected here, not from self.layers
+        # directly, so a group with every one of its layers unselected still
+        # gets a stable dirname — irrelevant in practice (nothing would be
+        # staged into it) but keeps this deterministic regardless of
+        # selection order. An ungrouped layer (tree_info has no "group", or
+        # the layer is missing from tree_info entirely) stays directly in
+        # self.temp_dir, exactly as before this existed.
+        group_names = []
+        for layer in self.layers:
+            group = tree_info.get(layer.id(), {}).get("group")
+            if group and group not in group_names:
+                group_names.append(group)
+        # Stashed on self, not just a local, so _write_project_manifest (called
+        # separately, after this method returns) can write the dirname ->
+        # original-group-name reverse lookup into the manifest — see
+        # project_manifest.build_manifest's group_dir_by_name param.
+        self.group_dir_by_name = naming.assign_group_dirnames(group_names)
+        group_dir_by_name = self.group_dir_by_name
 
         vector_layers = []
         vector_descriptor_by_id = {}
@@ -173,7 +209,8 @@ class GISPublisherRunner:
 
         for layer, descriptor in zip(vector_layers, vector_descriptors):
             plan = plan_by_id[layer.id()]
-            ok, message = layer_export.export_layer(layer, plan, self.temp_dir, self.target_crs)
+            dest_dir = self._dest_dir_for(layer, tree_info, group_dir_by_name)
+            ok, message = layer_export.export_layer(layer, plan, dest_dir, self.target_crs)
             self.export_results.append((layer.name(), ok, message))
             if not ok:
                 continue
@@ -193,11 +230,11 @@ class GISPublisherRunner:
             ))
 
             field_names = list(descriptor.field_names)
-            staged_dbf = os.path.join(self.temp_dir, plan.staged_basename + ".dbf")
+            staged_dbf = os.path.join(dest_dir, plan.staged_basename + ".dbf")
             if plan.rename_map and os.path.isfile(staged_dbf):
                 shapefile_io.rewrite_dbf_field_names(staged_dbf, field_names, plan.rename_map)
 
-            dest_sld = os.path.join(self.temp_dir, plan.staged_basename + ".sld")
+            dest_sld = os.path.join(dest_dir, plan.staged_basename + ".sld")
             sld_ok, sld_message = _export_sld(layer, dest_sld)
             self.sld_results.append((layer.name(), sld_ok, sld_message))
             if sld_ok:
@@ -207,7 +244,8 @@ class GISPublisherRunner:
 
         for layer in local_raster_layers:
             staged_basename = basename_by_id[layer.id()]
-            ok, message = layer_export.export_raster(layer, staged_basename, self.temp_dir)
+            dest_dir = self._dest_dir_for(layer, tree_info, group_dir_by_name)
+            ok, message = layer_export.export_raster(layer, staged_basename, dest_dir)
             self.export_results.append((layer.name(), ok, message))
             if ok:
                 self.manifest_layer_entries.append(project_manifest.build_layer_entry(
@@ -271,7 +309,9 @@ class GISPublisherRunner:
             project_info = project_manifest.describe_project()
             if not project_info.get("extent"):
                 project_info["extent"] = project_manifest.layers_extent_wgs84(self.layers)
-            manifest = project_manifest.build_manifest(project_info, self.manifest_layer_entries)
+            manifest = project_manifest.build_manifest(
+                project_info, self.manifest_layer_entries, self.group_dir_by_name
+            )
             project_manifest.write_manifest(self.temp_dir, manifest)
         except Exception as e:
             self.log_lines.append(f"[WARN] Could not write QGIS project manifest: {e}")

@@ -23,7 +23,7 @@ MANIFEST_SCHEMA_VERSION = 1
 MANIFEST_FILENAME = "qgis-project.json"
 
 
-def build_manifest(project_info, layer_entries):
+def build_manifest(project_info, layer_entries, group_dir_by_name=None):
     """Pure: assemble the manifest dict from already-collected plain data.
 
     ``project_info``: ``{"title": str-or-None, "extent": dict-or-None}``,
@@ -33,6 +33,14 @@ def build_manifest(project_info, layer_entries):
     ``build_layer_entry`` — each needs at least ``"staged"`` (the join key,
     matching the CLI's own staged basename exactly — see
     ``naming.assign_staged_basenames``) and ``"title"``.
+    ``group_dir_by_name``: ``{original_qgis_group_name: staged_dirname}``
+    (``naming.assign_group_dirnames``'s own return shape) for any layer staged
+    into a group subdirectory — written out inverted, ``{dirname: original
+    name}``, since gispublisher only ever sees the staged dirname (it becomes
+    a map's DSL identifier — see ``naming.dsl_safe_identifier`` — which is
+    filesystem/DSL-safe but not necessarily the pretty original name a QGIS
+    group can have, e.g. with spaces or accents) and needs the reverse lookup
+    to label that group's map with its real name instead.
 
     A ``None`` value anywhere is dropped rather than written as JSON ``null``,
     so the manifest only ever describes what's actually known and
@@ -40,7 +48,7 @@ def build_manifest(project_info, layer_entries):
     value (e.g. ``"visible": false`` is real data; a missing ``"visible"`` key
     means the plugin couldn't determine it).
     """
-    return {
+    manifest = {
         "schemaVersion": MANIFEST_SCHEMA_VERSION,
         "project": {k: v for k, v in (project_info or {}).items() if v is not None},
         "layers": [
@@ -48,6 +56,9 @@ def build_manifest(project_info, layer_entries):
             for entry in layer_entries
         ],
     }
+    if group_dir_by_name:
+        manifest["groups"] = {dirname: name for name, dirname in group_dir_by_name.items()}
+    return manifest
 
 
 def build_layer_entry(descriptor, staged_basename, tree_entry=None):

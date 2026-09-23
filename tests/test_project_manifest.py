@@ -150,6 +150,21 @@ class BuildManifestTests(unittest.TestCase):
         manifest = project_manifest.build_manifest({}, entries)
         self.assertEqual([e["staged"] for e in manifest["layers"]], ["a", "b", "c"])
 
+    def test_group_dir_by_name_written_inverted(self):
+        manifest = project_manifest.build_manifest(
+            {}, [], group_dir_by_name={"Salud Pública": "Salud_Publica", "Administrativo": "Administrativo"}
+        )
+        self.assertEqual(
+            manifest["groups"],
+            {"Salud_Publica": "Salud Pública", "Administrativo": "Administrativo"},
+        )
+
+    def test_no_groups_key_when_nothing_grouped(self):
+        manifest = project_manifest.build_manifest({}, [])
+        self.assertNotIn("groups", manifest)
+        manifest = project_manifest.build_manifest({}, [], group_dir_by_name={})
+        self.assertNotIn("groups", manifest)
+
     def test_integrates_with_build_layer_entry(self):
         entries = [
             project_manifest.build_layer_entry(_vector_descriptor(), "roads", {"order": 0, "visible": True}),

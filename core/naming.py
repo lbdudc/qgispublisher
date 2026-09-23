@@ -273,6 +273,48 @@ def assign_staged_basenames(candidates):
     return result
 
 
+def dsl_safe_identifier(name, fallback_prefix="g"):
+    """A DSL-safe (letters/digits/underscore, not digit-first) identifier
+    derived from an arbitrary QGIS group name, for use as a staged
+    subdirectory name — the CLI treats a staged subfolder's basename as a
+    `CREATE SORTABLE MAP <identifier>` DSL identifier directly (see
+    gispublisher's `main.js`: `path.basename(entryPath)`), so this has to be
+    both filesystem-safe *and* DSL-identifier-safe, unlike a plain staged
+    layer basename. Mirrors `suggest_app_name`'s approach (diacritics
+    stripped, unsafe characters collapsed to underscore) but with a neutral
+    fallback prefix instead of "App_", since this never reaches the user as
+    an app name.
+    """
+    ascii_name = normalize_diacritics(name or "")
+    ascii_name = _NON_IDENTIFIER_CHARS.sub("_", ascii_name).strip("_")
+    if not ascii_name:
+        return fallback_prefix
+    if ascii_name[0].isdigit():
+        ascii_name = f"{fallback_prefix}_{ascii_name}"
+    return ascii_name
+
+
+def assign_group_dirnames(group_names):
+    """The single authority for "what subdirectory will this QGIS group's
+    layers be staged under" — `group_names` is an ordered iterable of the
+    *distinct* group names actually in use (e.g. from
+    `project_manifest.describe_layer_tree`'s `group` values, deduplicated in
+    first-seen order). Returns `{group_name: dirname}`, each dirname a
+    `dsl_safe_identifier` deduplicated case-insensitively against its
+    siblings via the same collision-avoidance rule as
+    `assign_staged_basenames` (a QGIS project can easily have two group names
+    that collapse to the same identifier once diacritics/punctuation are
+    stripped, e.g. "Água" and "Agua").
+    """
+    used = set()
+    result = {}
+    for name in group_names:
+        dirname = staged_basename(dsl_safe_identifier(name), used)
+        used.add(dirname)
+        result[name] = dirname
+    return result
+
+
 def starts_with_digit(text):
     """True if the name begins with a digit, a case the JS naming helpers do not
     handle robustly (the generator's ``upperCamelCase`` slicing bug only triggers

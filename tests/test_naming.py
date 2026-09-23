@@ -177,6 +177,38 @@ class NamingTests(unittest.TestCase):
         ])
         self.assertEqual(result, {"a": "data", "b": "data_2", "c": "roads"})
 
+    def test_dsl_safe_identifier_keeps_valid_names(self):
+        self.assertEqual(naming.dsl_safe_identifier("Administrativo"), "Administrativo")
+
+    def test_dsl_safe_identifier_replaces_spaces_and_punctuation(self):
+        self.assertEqual(naming.dsl_safe_identifier("Salud Pública"), "Salud_Publica")
+
+    def test_dsl_safe_identifier_strips_diacritics(self):
+        self.assertEqual(naming.dsl_safe_identifier("Água"), "Agua")
+
+    def test_dsl_safe_identifier_digit_first_gets_prefixed(self):
+        result = naming.dsl_safe_identifier("2024 Layers")
+        self.assertTrue(naming.is_valid_dsl_identifier(result))
+        self.assertTrue(result.startswith("g_"))
+
+    def test_dsl_safe_identifier_empty_input_falls_back_to_prefix(self):
+        self.assertEqual(naming.dsl_safe_identifier(""), "g")
+        self.assertEqual(naming.dsl_safe_identifier("###"), "g")
+
+    def test_dsl_safe_identifier_custom_prefix(self):
+        result = naming.dsl_safe_identifier("1", fallback_prefix="group")
+        self.assertTrue(result.startswith("group_"))
+
+    def test_assign_group_dirnames_dedupes_after_stripping_diacritics(self):
+        # "Água" and "Agua" both normalize to the same identifier.
+        result = naming.assign_group_dirnames(["Água", "Agua", "Salud"])
+        self.assertEqual(result, {"Água": "Agua", "Agua": "Agua_2", "Salud": "Salud"})
+
+    def test_assign_group_dirnames_is_dsl_valid_for_every_result(self):
+        result = naming.assign_group_dirnames(["Grupo 1", "Grupo 2", ""])
+        for dirname in result.values():
+            self.assertTrue(naming.is_valid_dsl_identifier(dirname))
+
 
 if __name__ == "__main__":
     unittest.main()
