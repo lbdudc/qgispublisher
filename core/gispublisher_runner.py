@@ -1,10 +1,10 @@
-import json, os, re, tempfile, pathlib, shutil, time
+import dataclasses, json, os, re, tempfile, pathlib, shutil, time
 from qgis.PyQt.QtCore import QProcess, QUrl
 from qgis.PyQt.QtWidgets import QMessageBox
 from qgis.PyQt.QtGui import QDesktopServices
-from qgis.core import QgsMapLayer
+from qgis.core import QgsMapLayer, QgsProject
 from ..core.dependencies_checker import check_node_gispublisher
-from ..core import layer_export, model_discovery, naming, shapefile_io
+from ..core import layer_export, model_discovery, naming, project_manifest, shapefile_io
 
 # Staging dirs created under the OS temp dir per run; never cleaned up automatically
 # by the OS, so the plugin sweeps stale ones on its own (see cleanup_old_temp_dirs).
@@ -103,11 +103,23 @@ class GISPublisherRunner:
         self.cancelled = False
         self.sld_results = []  # list of (layer_name, ok, message)
         self.export_results = []  # list of (layer_name, ok, message)
+        self.manifest_layer_entries = []  # list of project_manifest.build_layer_entry() dicts
         self.log_lines = []
         self._start_time = None
         self.resulting_host = ""
 
     def copy_layers_directly(self):
+        # Layer-tree position/visibility/group, keyed by QGIS layer id — a
+        # property of the tree, not of the layer itself, so it's collected
+        # once up front rather than re-derived per layer below. Never raises:
+        # a manifest is enrichment, not a requirement (see
+        # _write_project_manifest), and an empty dict here just means every
+        # manifest_layer_entries entry below falls back to "unknown".
+        try:
+            tree_info = project_manifest.describe_layer_tree(QgsProject.instance().layerTreeRoot())
+        except Exception:
+            tree_info = {}
+
         vector_layers = []
         vector_descriptor_by_id = {}
         local_raster_layers = []
@@ -168,6 +180,18 @@ class GISPublisherRunner:
             for code in plan.warnings:
                 self.log_lines.append(f"[WARN] {layer.name()}: {code}")
 
+            # See project_manifest.remap_field_aliases: an alias for a field
+            # that also needed a DBF-safe rename must be re-keyed to match,
+            # or gispublisher would look it up under a name that no longer
+            # exists in the staged file.
+            manifest_descriptor = dataclasses.replace(
+                descriptor,
+                field_aliases=project_manifest.remap_field_aliases(descriptor.field_aliases, plan.rename_map),
+            )
+            self.manifest_layer_entries.append(project_manifest.build_layer_entry(
+                manifest_descriptor, plan.staged_basename, tree_info.get(layer.id())
+            ))
+
             field_names = list(descriptor.field_names)
             staged_dbf = os.path.join(self.temp_dir, plan.staged_basename + ".dbf")
             if plan.rename_map and os.path.isfile(staged_dbf):
@@ -185,6 +209,10 @@ class GISPublisherRunner:
             staged_basename = basename_by_id[layer.id()]
             ok, message = layer_export.export_raster(layer, staged_basename, self.temp_dir)
             self.export_results.append((layer.name(), ok, message))
+            if ok:
+                self.manifest_layer_entries.append(project_manifest.build_layer_entry(
+                    raster_descriptor_by_id[layer.id()], staged_basename, tree_info.get(layer.id())
+                ))
 
         if wms_requests:
             # urls.wms keeps its original bare-URL-per-line shape (deduplicated) so a
@@ -228,6 +256,26 @@ class GISPublisherRunner:
                     f"[WARN] Could not stage model '{entry.display_name}' ({entry.source})"
                 )
 
+    def _write_project_manifest(self):
+        """Stage qgis-project.json (see core.project_manifest and
+        gispublisher/src/manifest-util.js) into the root of the temp dir,
+        alongside the layers copy_layers_directly() just staged.
+
+        Deliberately never lets a manifest problem abort the run — an older
+        gispublisher CLI ignores the file entirely (it isn't a recognized
+        geographic extension), and a newer one treats a missing/malformed
+        manifest as "nothing extra to apply", so the worst case here is
+        exactly today's behaviour, not a broken run.
+        """
+        try:
+            project_info = project_manifest.describe_project()
+            if not project_info.get("extent"):
+                project_info["extent"] = project_manifest.layers_extent_wgs84(self.layers)
+            manifest = project_manifest.build_manifest(project_info, self.manifest_layer_entries)
+            project_manifest.write_manifest(self.temp_dir, manifest)
+        except Exception as e:
+            self.log_lines.append(f"[WARN] Could not write QGIS project manifest: {e}")
+
     def start(self, generate=False, config_path=None):
         gispub_path = check_node_gispublisher()
         args = []
@@ -235,6 +283,7 @@ class GISPublisherRunner:
         self.generate = generate
         self._start_time = time.time()
         self.copy_layers_directly()
+        self._write_project_manifest()
         self.copy_chart_folder()
         self.copy_model_folder()
 

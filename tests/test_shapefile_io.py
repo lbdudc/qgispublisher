@@ -206,6 +206,113 @@ class RewriteSldTextTests(unittest.TestCase):
         self.assertTrue(new_text.startswith('<?xml version="1.0" encoding="UTF-8"?>'))
 
 
+class RealQgisSldFixturesTests(unittest.TestCase):
+    """Regression fixtures captured verbatim from real `layer.saveSldStyle()`
+    output (QGIS 4.2.2, headless PyQGIS), not hand-written approximations —
+    see WORKLOG.md's "Workstream 3b/3c" entry. These lock in a "verify first"
+    finding: QGIS already emits a plain, any-prefix `PropertyName` element for
+    both a label's field and a categorized rule's filter, so the existing
+    rewrite (built and tested above only against synthetic marker/filter SLD)
+    already handles both without any code change — this class exists purely
+    to make sure that stays true.
+    """
+
+    # A single symbol + a text-labeled rule for a point layer, labeled by the
+    # (already DBF/DSL-safe, lowercase) field "nombre" — i.e. QGIS's default
+    # `QgsVectorLayerSimpleLabeling` output, unmodified.
+    LABELED_SLD = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<StyledLayerDescriptor xmlns="http://www.opengis.net/sld" version="1.1.0" '
+        'xmlns:ogc="http://www.opengis.net/ogc" xmlns:se="http://www.opengis.net/se" '
+        'xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'xsi:schemaLocation="http://www.opengis.net/sld http://schemas.opengis.net/sld/1.1.0/StyledLayerDescriptor.xsd">\n'
+        '  <NamedLayer>\n    <se:Name>test</se:Name>\n    <UserStyle>\n      <se:Name>test</se:Name>\n'
+        '      <se:FeatureTypeStyle>\n        <se:Rule>\n          <se:Name>Single symbol</se:Name>\n'
+        '          <se:PointSymbolizer>\n            <se:Graphic>\n              <se:Mark>\n'
+        '                <se:WellKnownName>circle</se:WellKnownName>\n                <se:Fill>\n'
+        '                  <se:SvgParameter name="fill">#729b6f</se:SvgParameter>\n                </se:Fill>\n'
+        '                <se:Stroke>\n                  <se:SvgParameter name="stroke">#232323</se:SvgParameter>\n'
+        '                  <se:SvgParameter name="stroke-width">0.5</se:SvgParameter>\n                </se:Stroke>\n'
+        '              </se:Mark>\n              <se:Size>7</se:Size>\n            </se:Graphic>\n'
+        '          </se:PointSymbolizer>\n        </se:Rule>\n        <se:Rule>\n          <se:TextSymbolizer>\n'
+        '            <se:Label>\n              <ogc:PropertyName>nombre</ogc:PropertyName>\n            </se:Label>\n'
+        '            <se:Font>\n              <se:SvgParameter name="font-family">Segoe UI</se:SvgParameter>\n'
+        '              <se:SvgParameter name="font-size">13</se:SvgParameter>\n            </se:Font>\n'
+        '            <se:LabelPlacement>\n              <se:PointPlacement>\n                <se:AnchorPoint>\n'
+        '                  <se:AnchorPointX>0.5</se:AnchorPointX>\n                  <se:AnchorPointY>0.5</se:AnchorPointY>\n'
+        '                </se:AnchorPoint>\n              </se:PointPlacement>\n            </se:LabelPlacement>\n'
+        '            <se:Fill>\n              <se:SvgParameter name="fill">#000000</se:SvgParameter>\n            </se:Fill>\n'
+        '          </se:TextSymbolizer>\n        </se:Rule>\n      </se:FeatureTypeStyle>\n    </UserStyle>\n'
+        '  </NamedLayer>\n</StyledLayerDescriptor>\n'
+    )
+
+    # A 3-category QgsCategorizedSymbolRenderer on an all-caps field "TOTAL" —
+    # exactly the case core/layer_export.py's plan_exports comment warns about:
+    # dsl-util.js lowercases every field deriving the generated entity's column
+    # name, so an unrewritten "TOTAL" filter would reference a column that
+    # doesn't exist and GeoServer would silently fall back to its own default
+    # style for the whole layer.
+    CATEGORIZED_SLD_RULE_TEMPLATE = (
+        "        <se:Rule>\n          <se:Name>{value}</se:Name>\n          <se:Description>\n"
+        "            <se:Title>{value}</se:Title>\n          </se:Description>\n"
+        '          <ogc:Filter xmlns:ogc="http://www.opengis.net/ogc">\n            <ogc:PropertyIsEqualTo>\n'
+        "              <ogc:PropertyName>TOTAL</ogc:PropertyName>\n              <ogc:Literal>{value}</ogc:Literal>\n"
+        "            </ogc:PropertyIsEqualTo>\n          </ogc:Filter>\n          <se:PolygonSymbolizer>\n"
+        '            <se:Fill>\n              <se:SvgParameter name="fill">{color}</se:SvgParameter>\n            </se:Fill>\n'
+        '            <se:Stroke>\n              <se:SvgParameter name="stroke">#232323</se:SvgParameter>\n'
+        '              <se:SvgParameter name="stroke-width">1</se:SvgParameter>\n'
+        '              <se:SvgParameter name="stroke-linejoin">bevel</se:SvgParameter>\n            </se:Stroke>\n'
+        "          </se:PolygonSymbolizer>\n        </se:Rule>\n"
+    )
+    CATEGORIZED_SLD = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<StyledLayerDescriptor xmlns="http://www.opengis.net/sld" version="1.1.0" '
+        'xmlns:ogc="http://www.opengis.net/ogc" xmlns:se="http://www.opengis.net/se" '
+        'xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'xsi:schemaLocation="http://www.opengis.net/sld http://schemas.opengis.net/sld/1.1.0/StyledLayerDescriptor.xsd">\n'
+        '  <NamedLayer>\n    <se:Name>test</se:Name>\n    <UserStyle>\n      <se:Name>test</se:Name>\n'
+        "      <se:FeatureTypeStyle>\n"
+        + CATEGORIZED_SLD_RULE_TEMPLATE.format(value=5, color="#ff0000")
+        + CATEGORIZED_SLD_RULE_TEMPLATE.format(value=15, color="#00ff00")
+        + CATEGORIZED_SLD_RULE_TEMPLATE.format(value=25, color="#0000ff")
+        + "      </se:FeatureTypeStyle>\n    </UserStyle>\n  </NamedLayer>\n</StyledLayerDescriptor>\n"
+    )
+
+    def test_label_property_name_untouched_when_field_already_safe(self):
+        # "nombre" needs no DBF/DSL rename, so plan_exports' sld_rename_map
+        # would be {} for it — confirm the rewrite is then a true no-op
+        # (matters because _rewrite_element_text skips re-serializing
+        # entirely when nothing changed, so this also guards against any
+        # future change accidentally forcing a needless XML round-trip).
+        changed, new_text = shapefile_io._rewrite_sld_text(self.LABELED_SLD, {})
+        self.assertFalse(changed)
+        self.assertEqual(new_text, self.LABELED_SLD)
+
+    def test_label_property_name_is_rewritten_when_its_field_is_renamed(self):
+        # Simulates a labeled field that *did* need a DBF-safe rename (e.g. a
+        # field named "1er Apelli") — the label must track the same rename or
+        # the generated style silently stops finding the field.
+        changed, new_text = shapefile_io._rewrite_sld_text(self.LABELED_SLD, {"nombre": "f1erApelli"})
+        self.assertTrue(changed)
+        self.assertIn("<ogc:PropertyName>f1erApelli</ogc:PropertyName>", new_text)
+        self.assertNotIn(">nombre<", new_text)
+        # Everything else in the rule (mark, colors, font) must survive intact.
+        self.assertIn("<se:WellKnownName>circle</se:WellKnownName>", new_text)
+        self.assertIn('<se:SvgParameter name="fill">#729b6f</se:SvgParameter>', new_text)
+        self.assertIn('<se:SvgParameter name="font-family">Segoe UI</se:SvgParameter>', new_text)
+
+    def test_categorized_filter_property_name_rewritten_for_every_rule(self):
+        changed, new_text = shapefile_io._rewrite_sld_text(self.CATEGORIZED_SLD, {"TOTAL": "total"})
+        self.assertTrue(changed)
+        self.assertEqual(new_text.count("<ogc:PropertyName>total</ogc:PropertyName>"), 3)
+        self.assertNotIn(">TOTAL<", new_text)
+        # The category values/colors themselves are untouched — only the
+        # field reference changes, not the literal comparison values.
+        for value, color in [(5, "#ff0000"), (15, "#00ff00"), (25, "#0000ff")]:
+            self.assertIn(f"<ogc:Literal>{value}</ogc:Literal>", new_text)
+            self.assertIn(f'<se:SvgParameter name="fill">{color}</se:SvgParameter>', new_text)
+
+
 class RewriteUnsupportedMarksTests(unittest.TestCase):
     def _rewrite(self, sld):
         return shapefile_io._rewrite_element_text(

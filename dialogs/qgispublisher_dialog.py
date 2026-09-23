@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import time
 
 from qgis.PyQt import uic
 from qgis.PyQt.QtCore import Qt, QThread, QUrl, pyqtSignal
@@ -14,11 +15,20 @@ from qgis.PyQt.QtWidgets import (
     QMessageBox,
     QStyle,
 )
-from qgis.core import QgsProject, QgsMapLayer
+from qgis.core import QgsProject, QgsMapLayer, QgsSettings
 
 from .progress_dialog import ProgressDialog
 from .chart_builder_dialog import ChartBuilderDialog
-from ..core.dependencies_checker import find_node, find_gispublisher, find_npm
+from ..core.dependencies_checker import (
+    find_node,
+    find_gispublisher,
+    find_npm,
+    compare_versions,
+    get_installed_gispublisher_version,
+    get_latest_gispublisher_version,
+    should_check_for_update,
+    REQUIRED_CLI_VERSION,
+)
 from ..core.deploy_config import build_deploy_config
 from ..core.gispublisher_runner import GISPublisherRunner, cleanup_old_temp_dirs
 from ..core import model_discovery, state_store, chart_builder, layer_export, naming
@@ -33,6 +43,12 @@ ACTION_PAGE_DEPLOY = 1
 DEPLOY_PAGE_LOCAL = 0
 DEPLOY_PAGE_SSH = 1
 DEPLOY_PAGE_AWS = 2
+
+# QgsSettings keys for the cached "latest known CLI version" check — the second
+# and third users of QgsSettings in this plugin, after progress_dialog's
+# GISPublisher/showLog.
+_LAST_UPDATE_CHECK_SETTING = "GISPublisher/lastUpdateCheck"
+_LATEST_KNOWN_VERSION_SETTING = "GISPublisher/latestKnownVersion"
 
 # Deploy-form field -> widget, per deploy type, used to restore non-secret fields
 # from deploy history. Credential/host-identity fields (AWS keys, SSH username/key
@@ -57,10 +73,16 @@ _RESTORE_FIELD_WIDGETS = {
 
 
 class InstallGisPublisherThread(QThread):
-    """Runs `npm install -g @lbdudc/gis-publisher` off the UI thread."""
+    """Runs `npm install -g <spec>` off the UI thread — used for both the initial
+    install (`spec="@lbdudc/gis-publisher"`) and an update
+    (`spec="@lbdudc/gis-publisher@latest"`), since it's the same operation to npm."""
 
     finished_ok = pyqtSignal()
     finished_error = pyqtSignal(str)
+
+    def __init__(self, spec="@lbdudc/gis-publisher", parent=None):
+        super().__init__(parent)
+        self.spec = spec
 
     def run(self):
         try:
@@ -69,7 +91,7 @@ class InstallGisPublisherThread(QThread):
             if sys.platform == "win32":
                 kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
             subprocess.run(  # nosec B603 - npm_path is a fully-resolved path from shutil.which()
-                [npm_path, "install", "-g", "@lbdudc/gis-publisher"],
+                [npm_path, "install", "-g", self.spec],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -79,6 +101,22 @@ class InstallGisPublisherThread(QThread):
             self.finished_ok.emit()
         except Exception as e:
             self.finished_error.emit(str(e))
+
+
+class LatestVersionThread(QThread):
+    """Asks npm for the latest published @lbdudc/gis-publisher version off the UI
+    thread. Failure is expected and unremarkable (QGIS is often run offline) —
+    callers should not pop a dialog for it, only for an explicit user-triggered
+    refresh."""
+
+    result = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def run(self):
+        try:
+            self.result.emit(get_latest_gispublisher_version())
+        except Exception as e:
+            self.failed.emit(str(e))
 
 
 class GISPublisherDialog(QDialog, FORM_CLASS):
@@ -95,6 +133,8 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self.output_dir = None
         self._node_result = None
         self._gispub_path = None
+        self._installed_version = None
+        self._latest_version_thread = None
         self._model_entries_by_id = {}
 
         cleanup_old_temp_dirs()
@@ -127,7 +167,8 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self.historyGroup.toggled.connect(self.on_history_group_toggled)
 
         self.installGispubButton.clicked.connect(self.install_gispublisher)
-        self.refreshStatusButton.clicked.connect(self.check_requirements)
+        self.updateGispubButton.clicked.connect(self.update_gispublisher)
+        self.refreshStatusButton.clicked.connect(self.force_check_requirements)
 
         self.runButton.clicked.connect(self.on_run_clicked)
         self.cancelButton.clicked.connect(self.close)
@@ -614,6 +655,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self.refreshModelsButton.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
 
         self.installGispubButton.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_ArrowDown))
+        self.updateGispubButton.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_ArrowUp))
         self.refreshStatusButton.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
 
         self.runButton.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
@@ -878,7 +920,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
     # Requirements / status
     # ------------------------------------------------------------------
 
-    def check_requirements(self):
+    def check_requirements(self, force_latest_check=False):
         self._node_result = find_node()
         node_ok = self._node_result["installed"]
 
@@ -891,12 +933,23 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             gispub_ok = False
             gispub_message = str(e)
 
+        self._installed_version = (
+            get_installed_gispublisher_version(self._gispub_path) if gispub_ok else None
+        )
+
         detail_parts = [
             f"Node.js found at: {self._node_result['path']}"
             if node_ok
             else f"Node.js: {self._node_result['message']}",
             gispub_message if gispub_ok else f"GISPublisher: {gispub_message}",
         ]
+        if gispub_ok and self._installed_version:
+            outdated = compare_versions(self._installed_version, REQUIRED_CLI_VERSION)
+            if outdated is not None and outdated < 0:
+                detail_parts.append(
+                    f"Installed CLI v{self._installed_version} is older than the version "
+                    f"this plugin was tested against (v{REQUIRED_CLI_VERSION})."
+                )
         self.statusSummaryLabel.setToolTip("\n".join(detail_parts))
 
         if node_ok and gispub_ok:
@@ -908,8 +961,78 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
 
         self.installGispubButton.setVisible(node_ok and not gispub_ok)
 
+        if not gispub_ok:
+            self.cliVersionLabel.setText("")
+            self.cliVersionLabel.setToolTip("")
+            self.updateGispubButton.setVisible(False)
+            return
+
+        settings = QgsSettings()
+        cached_latest = None if force_latest_check else (
+            settings.value(_LATEST_KNOWN_VERSION_SETTING, "", type=str) or None
+        )
+        self._update_version_label(cached_latest)
+
+        last_check = settings.value(_LAST_UPDATE_CHECK_SETTING, 0.0, type=float)
+        if force_latest_check or should_check_for_update(last_check, time.time()):
+            self._start_latest_version_check()
+
+    def force_check_requirements(self):
+        """Wired to refreshStatusButton: an explicit recheck bypasses the 24h
+        cache on the npm "latest version" lookup (unlike the automatic check
+        that also runs on every dialog open)."""
+        self.check_requirements(force_latest_check=True)
+
     def requirements_met(self):
         return bool(self._node_result and self._node_result["installed"] and self._gispub_path)
+
+    def _update_version_label(self, latest_version):
+        """Render cliVersionLabel/updateGispubButton from the currently known
+        installed/latest versions. `latest_version` may be None (not checked yet,
+        or the background check failed) — the label then just shows what's
+        installed, with no update offered."""
+        if not self._installed_version:
+            self.cliVersionLabel.setText("")
+            self.cliVersionLabel.setToolTip("")
+            self.updateGispubButton.setVisible(False)
+            return
+
+        newer_available = (
+            latest_version is not None
+            and (compare_versions(self._installed_version, latest_version) or 0) < 0
+        )
+        if newer_available:
+            self.cliVersionLabel.setText(f"v{self._installed_version} → {latest_version} available")
+            self.cliVersionLabel.setStyleSheet("color: #cc8400;")
+            self.updateGispubButton.setVisible(True)
+            self.updateGispubButton.setToolTip(f"npm install -g @lbdudc/gis-publisher@{latest_version}")
+        else:
+            self.cliVersionLabel.setText(f"v{self._installed_version}")
+            self.cliVersionLabel.setStyleSheet("color: #666666;")
+            self.cliVersionLabel.setToolTip("")
+            self.updateGispubButton.setVisible(False)
+
+    def _start_latest_version_check(self):
+        self._latest_version_thread = LatestVersionThread()
+        self._latest_version_thread.result.connect(self._on_latest_version_result)
+        self._latest_version_thread.failed.connect(self._on_latest_version_failed)
+        self._latest_version_thread.start()
+
+    def _on_latest_version_result(self, latest_version):
+        settings = QgsSettings()
+        settings.setValue(_LATEST_KNOWN_VERSION_SETTING, latest_version)
+        settings.setValue(_LAST_UPDATE_CHECK_SETTING, time.time())
+        self._update_version_label(latest_version)
+
+    def _on_latest_version_failed(self, error):
+        # Never surfaced to the user: this runs unprompted on every dialog open,
+        # and QGIS is frequently used offline — a failed background check (no
+        # network, npm registry hiccup, ...) is not worth a popup. Still record
+        # the attempt so an offline session doesn't retry every single time the
+        # dialog opens.
+        QgsSettings().setValue(_LAST_UPDATE_CHECK_SETTING, time.time())
+        if self.DEBUG:
+            print(f"[GISPublisher] latest-version check failed: {error}")
 
     def install_gispublisher(self):
         QMessageBox.information(
@@ -921,7 +1044,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self.installGispubButton.setEnabled(False)
         self.statusSummaryLabel.setText("Installing GISPublisher... this may take a few minutes.")
 
-        self.install_thread = InstallGisPublisherThread()
+        self.install_thread = InstallGisPublisherThread("@lbdudc/gis-publisher")
         self.install_thread.finished_ok.connect(self._install_ok)
         self.install_thread.finished_error.connect(self._install_error)
         self.install_thread.start()
@@ -929,11 +1052,36 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
     def _install_ok(self):
         self.installGispubButton.setEnabled(True)
         QMessageBox.information(self, "Installation completed", "GISPublisher was installed successfully.")
-        self.check_requirements()
+        self.check_requirements(force_latest_check=True)
 
     def _install_error(self, error):
         self.installGispubButton.setEnabled(True)
         QMessageBox.critical(self, "Error installing GISPublisher", error)
+        self.check_requirements()
+
+    def update_gispublisher(self):
+        QMessageBox.information(
+            self,
+            "GISPublisher Update",
+            "The following command will be executed:\n\nnpm install -g @lbdudc/gis-publisher@latest",
+        )
+
+        self.updateGispubButton.setEnabled(False)
+        self.statusSummaryLabel.setText("Updating GISPublisher... this may take a few minutes.")
+
+        self.update_thread = InstallGisPublisherThread("@lbdudc/gis-publisher@latest")
+        self.update_thread.finished_ok.connect(self._update_ok)
+        self.update_thread.finished_error.connect(self._update_error)
+        self.update_thread.start()
+
+    def _update_ok(self):
+        self.updateGispubButton.setEnabled(True)
+        QMessageBox.information(self, "Update completed", "GISPublisher was updated successfully.")
+        self.check_requirements(force_latest_check=True)
+
+    def _update_error(self, error):
+        self.updateGispubButton.setEnabled(True)
+        QMessageBox.critical(self, "Error updating GISPublisher", error)
         self.check_requirements()
 
     # ------------------------------------------------------------------

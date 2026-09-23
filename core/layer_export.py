@@ -46,6 +46,13 @@ class LayerDescriptor:
     """A plain, QGIS-free snapshot of the parts of a vector layer that affect how
     it's staged. Everything in ``plan_exports`` operates on this, not on a live
     ``QgsVectorLayer`` — build one with ``describe_layer``.
+
+    ``opacity``/``scale_visibility``/``min_scale``/``max_scale``/``field_aliases``
+    don't affect staging or ``plan_exports`` at all — they exist so
+    ``core.project_manifest.build_layer_entry`` has a single place to read a
+    layer's display metadata from, shared with ``RasterDescriptor`` (both
+    dataclasses carry the same names, so a manifest builder can treat either
+    kind of descriptor identically without an isinstance check).
     """
 
     layer_id: str
@@ -55,6 +62,11 @@ class LayerDescriptor:
     feature_count: int
     field_names: tuple
     has_geometry: bool = True
+    opacity: float = 1.0
+    scale_visibility: bool = False
+    min_scale: float = 0.0
+    max_scale: float = 0.0
+    field_aliases: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -162,12 +174,21 @@ RASTER_KIND_REJECTED = "rejected"  # can't be published; .message explains why
 class RasterDescriptor:
     """A plain, QGIS-free snapshot of a raster layer's identity, for
     ``classify_raster``. Build one with ``describe_raster``.
+
+    The display-metadata fields mirror ``LayerDescriptor``'s (see its
+    docstring) so ``core.project_manifest.build_layer_entry`` can read either
+    kind of descriptor the same way; ``field_aliases`` has no raster
+    equivalent (rasters have no attribute fields), so it's simply absent here.
     """
 
     layer_id: str
     name: str
     source: str
     provider_type: str
+    opacity: float = 1.0
+    scale_visibility: bool = False
+    min_scale: float = 0.0
+    max_scale: float = 0.0
 
 
 @dataclass
@@ -277,6 +298,28 @@ def classify_raster(descriptor):
 # QGIS-touching adapters — everything above this line is pure.
 # ----------------------------------------------------------------------
 
+def _layer_opacity(layer):
+    """`layer.opacity()` (the unified QgsMapLayer API, QGIS 3.18+) with a safe
+    fallback for anything older/unexpected — an opacity the plugin can't read
+    should degrade to "fully opaque" (1.0), not break the export."""
+    try:
+        return float(layer.opacity())
+    except Exception:  # nosec B110 - defensive; opacity is display metadata only
+        return 1.0
+
+
+def _field_aliases(layer):
+    """``{field_name: alias}`` for fields that actually have a QGIS-configured
+    alias distinct from their own name — a field left at its default (no
+    alias set, or an alias identical to the name) is deliberately left out.
+    """
+    return {
+        f.name(): f.alias()
+        for f in layer.fields()
+        if f.alias() and f.alias() != f.name()
+    }
+
+
 def describe_layer(layer):
     """Build a `LayerDescriptor` from a live `QgsVectorLayer`. The only place in this
     module that touches QGIS besides `export_layer`.
@@ -290,6 +333,11 @@ def describe_layer(layer):
         feature_count=layer.featureCount(),
         field_names=tuple(f.name() for f in layer.fields()),
         has_geometry=layer.isSpatial(),
+        opacity=_layer_opacity(layer),
+        scale_visibility=bool(layer.hasScaleBasedVisibility()),
+        min_scale=float(layer.minimumScale()),
+        max_scale=float(layer.maximumScale()),
+        field_aliases=_field_aliases(layer),
     )
 
 
@@ -300,6 +348,10 @@ def describe_raster(layer):
         name=layer.name(),
         source=layer.source() or "",
         provider_type=layer.providerType() or "",
+        opacity=_layer_opacity(layer),
+        scale_visibility=bool(layer.hasScaleBasedVisibility()),
+        min_scale=float(layer.minimumScale()),
+        max_scale=float(layer.maximumScale()),
     )
 
 
