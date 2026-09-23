@@ -42,7 +42,7 @@ class ModelEntry:
         try:
             params = self.algorithm.parameterDefinitions()
         except Exception:
-            return ""
+            return "Parameters unavailable (could not read this model's definition)"
         if not params:
             return "No parameters"
         names = [p.description() or p.name() for p in params]

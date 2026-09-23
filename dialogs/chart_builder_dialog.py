@@ -224,7 +224,11 @@ class ChartBuilderDialog(QDialog, FORM_CLASS):
         if layer is None:
             return
 
-        self.resolvedUrlLabel.setText(f"Data URL: {self._resolved_data_url(layer)}")
+        url_text = f"Data URL: {self._resolved_data_url(layer)}"
+        total_features = layer.featureCount()
+        if total_features > _PREVIEW_MAX_ROWS:
+            url_text += f"  ·  preview showing first {_PREVIEW_MAX_ROWS:,} of {total_features:,} features"
+        self.resolvedUrlLabel.setText(url_text)
 
         try:
             spec = self._build_current_spec(layer)

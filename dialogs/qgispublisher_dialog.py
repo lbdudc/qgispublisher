@@ -17,7 +17,7 @@ from qgis.PyQt.QtWidgets import (
     QStyle,
     QTableWidgetItem,
 )
-from qgis.core import QgsProject, QgsMapLayer, QgsSettings, QgsWkbTypes
+from qgis.core import Qgis, QgsMessageLog, QgsProject, QgsMapLayer, QgsSettings, QgsWkbTypes
 
 from .progress_dialog import ProgressDialog
 from .chart_builder_dialog import ChartBuilderDialog
@@ -323,8 +323,12 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         # own "degrades gracefully when absent" convention (CLAUDE.md).
         try:
             tree_info = project_manifest.describe_layer_tree(project.layerTreeRoot())
-        except Exception:
+        except Exception as e:
             tree_info = {}
+            QgsMessageLog.logMessage(
+                f"Could not read QGIS layer tree (group/order info lost): {e}",
+                "GISPublisher", level=Qgis.Warning,
+            )
 
         layers = [
             layer for layer in project.mapLayers().values()

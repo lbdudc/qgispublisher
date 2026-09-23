@@ -129,8 +129,9 @@ class GISPublisherRunner:
         # manifest_layer_entries entry below falls back to "unknown".
         try:
             tree_info = project_manifest.describe_layer_tree(QgsProject.instance().layerTreeRoot())
-        except Exception:
+        except Exception as e:
             tree_info = {}
+            self.log_lines.append(f"[WARN] Could not read QGIS layer tree (group/order info lost): {e}")
 
         # One staged subdirectory per top-level-or-nested QGIS group (its
         # immediate parent group's name — see describe_layer_tree), so
