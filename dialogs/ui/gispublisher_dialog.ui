@@ -6,13 +6,13 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>720</width>
+    <width>940</width>
     <height>640</height>
    </rect>
   </property>
   <property name="minimumSize">
    <size>
-    <width>620</width>
+    <width>760</width>
     <height>480</height>
    </size>
   </property>
@@ -133,6 +133,16 @@
            </spacer>
           </item>
           <item>
+           <widget class="QCheckBox" name="layerDetailsCheckBox">
+            <property name="text">
+             <string>Show details</string>
+            </property>
+            <property name="toolTip">
+             <string>Toggle between just layer names and full details (geometry, feature count, CRS, group)</string>
+            </property>
+           </widget>
+          </item>
+          <item>
            <widget class="QPushButton" name="selectAllButton">
             <property name="text">
              <string>Select all</string>
@@ -142,7 +152,7 @@
          </layout>
         </item>
         <item>
-         <widget class="QListWidget" name="layersList">
+         <widget class="QTableWidget" name="layersTable">
           <property name="sizePolicy">
            <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
             <horstretch>0</horstretch>
@@ -161,6 +171,43 @@
           <property name="selectionMode">
            <enum>QAbstractItemView::NoSelection</enum>
           </property>
+          <property name="editTriggers">
+           <set>QAbstractItemView::NoEditTriggers</set>
+          </property>
+          <property name="alternatingRowColors">
+           <bool>true</bool>
+          </property>
+          <property name="toolTip">
+           <string>Hover a layer for its source, CRS and field details</string>
+          </property>
+          <attribute name="horizontalHeaderStretchLastSection">
+           <bool>false</bool>
+          </attribute>
+          <column>
+           <property name="text">
+            <string>Layer</string>
+           </property>
+          </column>
+          <column>
+           <property name="text">
+            <string>Type</string>
+           </property>
+          </column>
+          <column>
+           <property name="text">
+            <string>Features</string>
+           </property>
+          </column>
+          <column>
+           <property name="text">
+            <string>CRS</string>
+           </property>
+          </column>
+          <column>
+           <property name="text">
+            <string>Group</string>
+           </property>
+          </column>
          </widget>
         </item>
         <item>
@@ -888,87 +935,6 @@
              </widget>
             </widget>
            </item>
-           <item>
-            <widget class="QGroupBox" name="historyGroup">
-             <property name="title">
-              <string>History</string>
-             </property>
-             <property name="checkable">
-              <bool>true</bool>
-             </property>
-             <property name="checked">
-              <bool>true</bool>
-             </property>
-             <layout class="QVBoxLayout" name="historyGroupLayout">
-              <item>
-               <widget class="QListWidget" name="historyList">
-                <property name="sizePolicy">
-                 <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
-                  <horstretch>0</horstretch>
-                  <verstretch>1</verstretch>
-                 </sizepolicy>
-                </property>
-                <property name="minimumSize">
-                 <size>
-                  <width>0</width>
-                  <height>90</height>
-                 </size>
-                </property>
-                <property name="toolTip">
-                 <string>Past Deploy runs from this QGIS profile, most recent first</string>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <layout class="QHBoxLayout" name="historyButtonsLayout">
-                <item>
-                 <widget class="QPushButton" name="historyOpenAppButton">
-                  <property name="enabled">
-                   <bool>false</bool>
-                  </property>
-                  <property name="text">
-                   <string>Open app</string>
-                  </property>
-                 </widget>
-                </item>
-                <item>
-                 <widget class="QPushButton" name="historyRestoreButton">
-                  <property name="enabled">
-                   <bool>false</bool>
-                  </property>
-                  <property name="text">
-                   <string>Restore settings</string>
-                  </property>
-                 </widget>
-                </item>
-                <item>
-                 <widget class="QPushButton" name="historyViewLogButton">
-                  <property name="enabled">
-                   <bool>false</bool>
-                  </property>
-                  <property name="text">
-                   <string>View log</string>
-                  </property>
-                 </widget>
-                </item>
-                <item>
-                 <spacer name="historyButtonsSpacer">
-                  <property name="orientation">
-                   <enum>Qt::Horizontal</enum>
-                  </property>
-                  <property name="sizeHint" stdset="0">
-                   <size>
-                    <width>40</width>
-                    <height>20</height>
-                   </size>
-                  </property>
-                 </spacer>
-                </item>
-               </layout>
-              </item>
-             </layout>
-            </widget>
-           </item>
           </layout>
          </widget>
         </item>
@@ -979,6 +945,16 @@
    </item>
    <item>
     <layout class="QHBoxLayout" name="bottomBar">
+     <item>
+      <widget class="QPushButton" name="historyButton">
+       <property name="text">
+        <string>History</string>
+       </property>
+       <property name="toolTip">
+        <string>View past Generate and Deploy runs</string>
+       </property>
+      </widget>
+     </item>
      <item>
       <spacer name="bottomBarSpacer">
        <property name="orientation">

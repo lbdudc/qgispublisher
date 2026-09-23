@@ -9,6 +9,7 @@ build/
 .eggs/
 
 .claude
+/product
 
 # QGIS generated files
 ui_*.py

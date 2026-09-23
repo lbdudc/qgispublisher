@@ -4,34 +4,35 @@ import sys
 import time
 
 from qgis.PyQt import uic
-from qgis.PyQt.QtCore import Qt, QThread, QUrl, pyqtSignal
-from qgis.PyQt.QtGui import QDesktopServices, QIcon
+from qgis.PyQt.QtCore import Qt, QThread, pyqtSignal
+from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import (
     QAction,
     QDialog,
     QFileDialog,
+    QHeaderView,
     QLineEdit,
     QListWidgetItem,
     QMessageBox,
     QStyle,
+    QTableWidgetItem,
 )
-from qgis.core import QgsProject, QgsMapLayer, QgsSettings
+from qgis.core import QgsProject, QgsMapLayer, QgsSettings, QgsWkbTypes
 
 from .progress_dialog import ProgressDialog
 from .chart_builder_dialog import ChartBuilderDialog
+from .history_dialog import HistoryDialog
 from ..core.dependencies_checker import (
-    find_node,
-    find_gispublisher,
     find_npm,
     compare_versions,
-    get_installed_gispublisher_version,
+    gather_requirements,
     get_latest_gispublisher_version,
     should_check_for_update,
     REQUIRED_CLI_VERSION,
 )
 from ..core.deploy_config import build_deploy_config
 from ..core.gispublisher_runner import GISPublisherRunner, cleanup_old_temp_dirs
-from ..core import model_discovery, state_store, chart_builder, layer_export, naming
+from ..core import model_discovery, state_store, chart_builder, layer_export, naming, project_manifest
 
 FORM_CLASS, _ = uic.loadUiType(
     os.path.join(os.path.dirname(__file__), "ui", "gispublisher_dialog.ui")
@@ -44,11 +45,28 @@ DEPLOY_PAGE_LOCAL = 0
 DEPLOY_PAGE_SSH = 1
 DEPLOY_PAGE_AWS = 2
 
+# layersTable column indices — matches the <column> order in gispublisher_dialog.ui.
+# Only LAYER_COL_NAME is always visible; the rest are toggled together by
+# layerDetailsCheckBox (see _apply_layer_details_visibility) rather than being
+# rebuilt, so switching "Show details" is an instant column show/hide, not a
+# full reload.
+LAYER_COL_NAME = 0
+LAYER_COL_TYPE = 1
+LAYER_COL_FEATURES = 2
+LAYER_COL_CRS = 3
+LAYER_COL_GROUP = 4
+LAYER_DETAIL_COLUMNS = (LAYER_COL_TYPE, LAYER_COL_FEATURES, LAYER_COL_CRS, LAYER_COL_GROUP)
+
 # QgsSettings keys for the cached "latest known CLI version" check — the second
 # and third users of QgsSettings in this plugin, after progress_dialog's
 # GISPublisher/showLog.
 _LAST_UPDATE_CHECK_SETTING = "GISPublisher/lastUpdateCheck"
 _LATEST_KNOWN_VERSION_SETTING = "GISPublisher/latestKnownVersion"
+
+# Whether the Layers tab shows the full per-layer breakdown (geometry/feature
+# count/CRS/group) or just names — same "remembered checkbox" pattern as
+# progress_dialog's GISPublisher/showLog.
+_SHOW_LAYER_DETAILS_SETTING = "GISPublisher/showLayerDetails"
 
 # Deploy-form field -> widget, per deploy type, used to restore non-secret fields
 # from deploy history. Credential/host-identity fields (AWS keys, SSH username/key
@@ -119,6 +137,20 @@ class LatestVersionThread(QThread):
             self.failed.emit(str(e))
 
 
+class RequirementsCheckThread(QThread):
+    """Runs the Node.js / GISPublisher presence + installed-version checks off
+    the UI thread. gather_requirements() can spawn several npm/node
+    subprocesses (npm config get prefix, npm root -g, gispublisher --version),
+    each routinely a second or more on Windows — these used to run
+    synchronously in check_requirements(), freezing the dialog on every open
+    and before every Generate/Deploy click."""
+
+    finished_check = pyqtSignal(dict)
+
+    def run(self):
+        self.finished_check.emit(gather_requirements())
+
+
 class GISPublisherDialog(QDialog, FORM_CLASS):
     """Main plugin dialog: layers, optional charts/models, and a Generate/Deploy action."""
 
@@ -134,13 +166,21 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self._node_result = None
         self._gispub_path = None
         self._installed_version = None
+        self._gispublisher_root = None
         self._latest_version_thread = None
+        self._requirements_thread = None
+        self._requirements_check_callbacks = []
+        self._requirements_force_latest_check = False
         self._model_entries_by_id = {}
 
         cleanup_old_temp_dirs()
 
         self.selectAllButton.clicked.connect(self.on_select_all_layers)
-        self.layersList.itemChanged.connect(self.update_selection_state)
+        self.layersTable.itemChanged.connect(self.update_selection_state)
+        self._setup_layers_table()
+        self.layerDetailsCheckBox.setChecked(QgsSettings().value(_SHOW_LAYER_DETAILS_SETTING, True, type=bool))
+        self.layerDetailsCheckBox.toggled.connect(self.on_layer_details_toggled)
+        self._apply_layer_details_visibility(self.layerDetailsCheckBox.isChecked())
 
         self.newChartButton.clicked.connect(self.open_chart_builder)
         self.selectChartFolderButton.clicked.connect(self.select_chart_folder)
@@ -160,11 +200,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self.radioSSH.toggled.connect(self.update_deploy_stack)
         self.radioAWS.toggled.connect(self.update_deploy_stack)
 
-        self.historyList.itemSelectionChanged.connect(self.update_history_buttons_state)
-        self.historyOpenAppButton.clicked.connect(self.on_history_open_app)
-        self.historyRestoreButton.clicked.connect(self.on_history_restore)
-        self.historyViewLogButton.clicked.connect(self.on_history_view_log)
-        self.historyGroup.toggled.connect(self.on_history_group_toggled)
+        self.historyButton.clicked.connect(self.open_history_dialog)
 
         self.installGispubButton.clicked.connect(self.install_gispublisher)
         self.updateGispubButton.clicked.connect(self.update_gispublisher)
@@ -178,7 +214,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self.update_action_stack()
         self.update_deploy_stack()
 
-        self.contentSplitter.setSizes([260, 400])
+        self.contentSplitter.setSizes([360, 560])
 
         QgsProject.instance().layersAdded.connect(self.load_layers)
         QgsProject.instance().layersRemoved.connect(self.load_layers)
@@ -186,7 +222,6 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
 
         self.load_layers()
         self.refresh_models_list()
-        self.load_history()
         self._apply_default_app_identity()
         self.restore_selection_from_project()
         self.check_requirements()
@@ -259,40 +294,180 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
     # Layers
     # ------------------------------------------------------------------
 
+    def _setup_layers_table(self):
+        """One-time layersTable configuration — column headers/count come from
+        the <column> entries in gispublisher_dialog.ui; this fills in what
+        Designer has no simple declarative property for. The Layer column
+        stretches to absorb whatever width the dialog is resized to (the thing
+        that made the old QListWidget's crammed single-line text look
+        unresponsive); the data columns size to their content instead."""
+        header = self.layersTable.horizontalHeader()
+        header.setSectionResizeMode(LAYER_COL_NAME, QHeaderView.ResizeMode.Stretch)
+        for col in LAYER_DETAIL_COLUMNS:
+            header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        self.layersTable.verticalHeader().setVisible(False)
+
     def load_layers(self):
         # Preserve the user's check state across a live layersAdded/layersRemoved
         # refresh instead of resetting everything back to "all checked".
-        had_items = self.layersList.count() > 0
-        previously_checked = self._checked_data(self.layersList)
+        had_items = self.layersTable.rowCount() > 0
+        previously_checked = self._checked_layer_ids()
 
-        self.layersList.clear()
+        # itemChanged (wired to update_selection_state) would otherwise fire
+        # once per cell while the table is being rebuilt below.
+        self.layersTable.blockSignals(True)
+        self.layersTable.setRowCount(0)
 
         project = QgsProject.instance()
-        layers = project.mapLayers().values()
+        # Never lets a manifest problem block the list — see project_manifest's
+        # own "degrades gracefully when absent" convention (CLAUDE.md).
+        try:
+            tree_info = project_manifest.describe_layer_tree(project.layerTreeRoot())
+        except Exception:
+            tree_info = {}
 
-        for layer in layers:
-            if layer.type() not in (QgsMapLayer.LayerType.VectorLayer, QgsMapLayer.LayerType.RasterLayer):
-                continue
+        layers = [
+            layer for layer in project.mapLayers().values()
+            if layer.type() in (QgsMapLayer.LayerType.VectorLayer, QgsMapLayer.LayerType.RasterLayer)
+        ]
+        # Same top-to-bottom order as the QGIS Layers panel, not dict/registration
+        # order — project.mapLayers() gives no ordering guarantee at all.
+        layers.sort(key=lambda layer: tree_info.get(layer.id(), {}).get("order", 10**9))
 
-            item = QListWidgetItem(layer.name())
-            item.setData(Qt.ItemDataRole.UserRole, layer.id())
+        warning_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
+
+        self.layersTable.setRowCount(len(layers))
+        for row, layer in enumerate(layers):
+            group = tree_info.get(layer.id(), {}).get("group")
+            name, type_text, features_text, crs_text, group_text, tooltip, has_warning = (
+                self._describe_layer_for_table(layer, group)
+            )
+
+            name_item = QTableWidgetItem(name)
+            name_item.setFlags((name_item.flags() | Qt.ItemFlag.ItemIsUserCheckable) & ~Qt.ItemFlag.ItemIsEditable)
+            name_item.setData(Qt.ItemDataRole.UserRole, layer.id())
+            name_item.setToolTip(tooltip)
+            if has_warning:
+                name_item.setIcon(warning_icon)
             if had_items:
-                item.setCheckState(Qt.CheckState.Checked if layer.id() in previously_checked else Qt.CheckState.Unchecked)
+                name_item.setCheckState(Qt.CheckState.Checked if layer.id() in previously_checked else Qt.CheckState.Unchecked)
             else:
-                item.setCheckState(Qt.CheckState.Checked)
+                name_item.setCheckState(Qt.CheckState.Checked)
+            self.layersTable.setItem(row, LAYER_COL_NAME, name_item)
 
-            self.layersList.addItem(item)
+            for col, text in (
+                (LAYER_COL_TYPE, type_text),
+                (LAYER_COL_FEATURES, features_text),
+                (LAYER_COL_CRS, crs_text),
+                (LAYER_COL_GROUP, group_text),
+            ):
+                cell = QTableWidgetItem(text)
+                cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                cell.setToolTip(tooltip)
+                self.layersTable.setItem(row, col, cell)
 
+        self.layersTable.blockSignals(False)
         self.update_selection_state()
 
+    def on_layer_details_toggled(self, checked):
+        # A column show/hide, not a rebuild — the data for every column was
+        # already computed in load_layers(), so toggling is instant and never
+        # loses the table's scroll position.
+        QgsSettings().setValue(_SHOW_LAYER_DETAILS_SETTING, checked)
+        self._apply_layer_details_visibility(checked)
+
+    def _apply_layer_details_visibility(self, detailed):
+        for col in LAYER_DETAIL_COLUMNS:
+            self.layersTable.setColumnHidden(col, not detailed)
+
+    def _describe_layer_for_table(self, layer, group):
+        """Build one layersTable row's cell text (name/type/features/CRS/group),
+        full tooltip, and whether it needs a warning icon.
+
+        Reuses the same descriptors/classification layer_export.py uses to
+        decide how (or whether) a layer gets staged, so what's shown here
+        never contradicts what a Generate/Deploy run will actually do with it
+        (see _rejected_raster_layers, which uses the same classify_raster()
+        for its own preflight check).
+        """
+        group_text = group or "—"
+
+        if layer.type() == QgsMapLayer.LayerType.VectorLayer:
+            descriptor = layer_export.describe_layer(layer)
+            geom = QgsWkbTypes.geometryDisplayString(layer.geometryType())
+            crs = descriptor.crs_authid or "no CRS"
+            count = descriptor.feature_count
+
+            issues = []
+            if not descriptor.crs_authid:
+                issues.append("No CRS set — will be published without a defined projection.")
+            if count == 0:
+                issues.append("Layer has no features.")
+            if not descriptor.has_geometry:
+                issues.append("Attribute-only table (no geometry).")
+            if len(descriptor.field_names) > layer_export.MAX_DBF_FIELDS:
+                issues.append(
+                    f"{len(descriptor.field_names)} fields exceeds the {layer_export.MAX_DBF_FIELDS}-field "
+                    "shapefile limit — extra fields will be dropped."
+                )
+
+            tooltip_parts = [
+                f"Source: {descriptor.source}",
+                f"CRS: {crs}",
+                f"Fields: {len(descriptor.field_names)}",
+            ]
+            if group:
+                tooltip_parts.append(f"Group: {group}")
+            tooltip_parts.extend(issues)
+            return (
+                layer.name(), geom, f"{count:,}", crs, group_text,
+                "\n".join(tooltip_parts), bool(issues),
+            )
+
+        # Raster
+        descriptor = layer_export.describe_raster(layer)
+        plan = layer_export.classify_raster(descriptor)
+        kind_label = {
+            layer_export.RASTER_KIND_LOCAL: "Raster (local)",
+            layer_export.RASTER_KIND_WMS: "Raster (WMS)",
+            layer_export.RASTER_KIND_REJECTED: "Raster (unsupported)",
+        }.get(plan.kind, "Raster")
+
+        tooltip_parts = [f"Source: {descriptor.source}", f"Provider: {descriptor.provider_type}"]
+        if group:
+            tooltip_parts.append(f"Group: {group}")
+        has_warning = plan.kind == layer_export.RASTER_KIND_REJECTED
+        if plan.message:
+            tooltip_parts.append(plan.message)
+        return (
+            layer.name(), kind_label, "—", "—", group_text,
+            "\n".join(tooltip_parts), has_warning,
+        )
+
+    def _checked_layer_ids(self):
+        return {
+            self.layersTable.item(row, LAYER_COL_NAME).data(Qt.ItemDataRole.UserRole)
+            for row in range(self.layersTable.rowCount())
+            if self.layersTable.item(row, LAYER_COL_NAME).checkState() == Qt.CheckState.Checked
+        }
+
     def on_select_all_layers(self):
-        self.toggle_all_checked(self.layersList)
+        rows = self.layersTable.rowCount()
+        if rows == 0:
+            return
+        all_checked = all(
+            self.layersTable.item(row, LAYER_COL_NAME).checkState() == Qt.CheckState.Checked
+            for row in range(rows)
+        )
+        new_state = Qt.CheckState.Unchecked if all_checked else Qt.CheckState.Checked
+        for row in range(rows):
+            self.layersTable.item(row, LAYER_COL_NAME).setCheckState(new_state)
         self.update_selection_state()
 
     def update_selection_state(self):
         has_selected = any(
-            self.layersList.item(i).checkState() == Qt.CheckState.Checked
-            for i in range(self.layersList.count())
+            self.layersTable.item(row, LAYER_COL_NAME).checkState() == Qt.CheckState.Checked
+            for row in range(self.layersTable.rowCount())
         )
         self.infoLabel.setVisible(not has_selected)
         self._apply_chart_validation_icons()
@@ -301,8 +476,8 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         project = QgsProject.instance()
         selected_layers = []
 
-        for i in range(self.layersList.count()):
-            item = self.layersList.item(i)
+        for row in range(self.layersTable.rowCount()):
+            item = self.layersTable.item(row, LAYER_COL_NAME)
             if item.checkState() == Qt.CheckState.Checked:
                 layer = project.mapLayer(item.data(Qt.ItemDataRole.UserRole))
                 if layer:
@@ -751,48 +926,27 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         return deploy_type, fields
 
     # ------------------------------------------------------------------
-    # Deploy history
+    # Run history (Generate and Deploy alike) — a standalone HistoryDialog now
+    # owns the list/log/clear UI; this dialog only relays "Restore settings"
+    # since that one action needs its own fields (app name/output folder,
+    # deploy type and its fields).
     # ------------------------------------------------------------------
 
-    def load_history(self):
-        self.historyList.clear()
-        records = state_store.load_deploy_history()
-        for record in reversed(records):  # most recent first
-            summary = f"{record.get('timestamp', '')}  [{record.get('deploy_type', '')}]"
-            exit_code = record.get("exit_code")
-            summary += "  ✔" if exit_code == 0 else f"  ✖ (exit {exit_code})"
-            if record.get("host"):
-                summary += f"  → {record['host']}"
+    def open_history_dialog(self):
+        dialog = HistoryDialog(parent=self)
+        dialog.restore_requested.connect(self._apply_history_restore)
+        dialog.exec()
 
-            item = QListWidgetItem(summary)
-            item.setData(Qt.ItemDataRole.UserRole, record)
-            self.historyList.addItem(item)
-
-        self.update_history_buttons_state()
-
-    def update_history_buttons_state(self):
-        item = self.historyList.currentItem()
-        record = item.data(Qt.ItemDataRole.UserRole) if item else None
-        self.historyOpenAppButton.setEnabled(bool(record and record.get("host")))
-        self.historyRestoreButton.setEnabled(record is not None)
-        self.historyViewLogButton.setEnabled(bool(record and record.get("log_tail")))
-
-    def on_history_group_toggled(self, checked):
-        self.historyList.setVisible(checked)
-        self.historyOpenAppButton.setVisible(checked)
-        self.historyRestoreButton.setVisible(checked)
-        self.historyViewLogButton.setVisible(checked)
-
-    def on_history_open_app(self):
-        item = self.historyList.currentItem()
-        record = item.data(Qt.ItemDataRole.UserRole) if item else None
-        if record and record.get("host"):
-            QDesktopServices.openUrl(QUrl(record["host"]))
-
-    def on_history_restore(self):
-        item = self.historyList.currentItem()
-        record = item.data(Qt.ItemDataRole.UserRole) if item else None
-        if not record:
+    def _apply_history_restore(self, record):
+        run_type = record.get("run_type") or "deploy"
+        if run_type == "generate":
+            self.radioGenerate.setChecked(True)
+            output_dir = record.get("output_dir")
+            if output_dir and os.path.isdir(output_dir):
+                self.output_dir = output_dir
+                self.outputFolderLabel.setStyleSheet("")
+                self.outputFolderLabel.setText(output_dir)
+            QMessageBox.information(self, "Settings restored", "Output folder restored from this run.")
             return
 
         deploy_type = record.get("deploy_type", "local")
@@ -821,18 +975,6 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             "Credentials and key paths are never stored — please re-enter them.",
         )
 
-    def on_history_view_log(self):
-        item = self.historyList.currentItem()
-        record = item.data(Qt.ItemDataRole.UserRole) if item else None
-        if not record:
-            return
-
-        box = QMessageBox(self)
-        box.setWindowTitle("Deploy log")
-        box.setText(f"{record.get('timestamp', '')} — {record.get('deploy_type', '')}")
-        box.setDetailedText("\n".join(record.get("log_tail") or []) or "(no log captured)")
-        box.exec()
-
     # ------------------------------------------------------------------
     # Persistence (per-project selection)
     # ------------------------------------------------------------------
@@ -842,11 +984,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         selection = {
             "app_name": self.appNameEdit.text().strip(),
             "app_version": self.appVersionEdit.text().strip(),
-            "layer_ids": [
-                self.layersList.item(i).data(Qt.ItemDataRole.UserRole)
-                for i in range(self.layersList.count())
-                if self.layersList.item(i).checkState() == Qt.CheckState.Checked
-            ],
+            "layer_ids": list(self._checked_layer_ids()),
             "model_ids": [
                 self.modelFilesList.item(i).data(Qt.ItemDataRole.UserRole)
                 for i in range(self.modelFilesList.count())
@@ -877,8 +1015,8 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             self.appVersionEdit.setText(selection["app_version"])
 
         layer_ids = set(selection["layer_ids"])
-        for i in range(self.layersList.count()):
-            item = self.layersList.item(i)
+        for row in range(self.layersTable.rowCount()):
+            item = self.layersTable.item(row, LAYER_COL_NAME)
             item.setCheckState(Qt.CheckState.Checked if item.data(Qt.ItemDataRole.UserRole) in layer_ids else Qt.CheckState.Unchecked)
         self.update_selection_state()
 
@@ -920,22 +1058,44 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
     # Requirements / status
     # ------------------------------------------------------------------
 
-    def check_requirements(self, force_latest_check=False):
-        self._node_result = find_node()
+    def check_requirements(self, force_latest_check=False, on_done=None):
+        """Kick off Node.js/GISPublisher presence + version detection in a
+        background thread (RequirementsCheckThread), so the UI never blocks on
+        the npm/node subprocess calls involved — previously this ran
+        synchronously here, freezing the dialog on open and again before every
+        Generate/Deploy click.
+
+        `on_done`, if given, is invoked (with no arguments) once results are
+        applied to the UI — used by on_run_clicked to gate Generate/Deploy
+        without blocking the click itself. If a check is already in flight,
+        this piggybacks on it instead of starting a second one; `on_done` (and
+        a `force_latest_check=True`) are still honored once it completes.
+        """
+        if on_done is not None:
+            self._requirements_check_callbacks.append(on_done)
+        self._requirements_force_latest_check = self._requirements_force_latest_check or force_latest_check
+
+        if self._requirements_thread is not None and self._requirements_thread.isRunning():
+            return
+
+        self.runButton.setEnabled(False)
+        self.refreshStatusButton.setEnabled(False)
+        self.statusSummaryLabel.setStyleSheet("color: #666666;")
+        self.statusSummaryLabel.setText("Checking requirements…")
+
+        self._requirements_thread = RequirementsCheckThread()
+        self._requirements_thread.finished_check.connect(self._on_requirements_checked)
+        self._requirements_thread.start()
+
+    def _on_requirements_checked(self, status):
+        self._node_result = status["node_result"]
         node_ok = self._node_result["installed"]
 
-        try:
-            self._gispub_path = find_gispublisher()
-            gispub_ok = True
-            gispub_message = f"GISPublisher found at: {self._gispub_path}"
-        except Exception as e:
-            self._gispub_path = None
-            gispub_ok = False
-            gispub_message = str(e)
-
-        self._installed_version = (
-            get_installed_gispublisher_version(self._gispub_path) if gispub_ok else None
-        )
+        gispub_ok = status["gispub_ok"]
+        gispub_message = status["gispub_message"]
+        self._gispub_path = status["gispub_path"]
+        self._installed_version = status["installed_version"]
+        self._gispublisher_root = status["gispublisher_root"]
 
         detail_parts = [
             f"Node.js found at: {self._node_result['path']}"
@@ -965,17 +1125,25 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             self.cliVersionLabel.setText("")
             self.cliVersionLabel.setToolTip("")
             self.updateGispubButton.setVisible(False)
-            return
+        else:
+            force_latest_check = self._requirements_force_latest_check
+            settings = QgsSettings()
+            cached_latest = None if force_latest_check else (
+                settings.value(_LATEST_KNOWN_VERSION_SETTING, "", type=str) or None
+            )
+            self._update_version_label(cached_latest)
 
-        settings = QgsSettings()
-        cached_latest = None if force_latest_check else (
-            settings.value(_LATEST_KNOWN_VERSION_SETTING, "", type=str) or None
-        )
-        self._update_version_label(cached_latest)
+            last_check = settings.value(_LAST_UPDATE_CHECK_SETTING, 0.0, type=float)
+            if force_latest_check or should_check_for_update(last_check, time.time()):
+                self._start_latest_version_check()
 
-        last_check = settings.value(_LAST_UPDATE_CHECK_SETTING, 0.0, type=float)
-        if force_latest_check or should_check_for_update(last_check, time.time()):
-            self._start_latest_version_check()
+        self._requirements_force_latest_check = False
+        self.runButton.setEnabled(True)
+        self.refreshStatusButton.setEnabled(True)
+
+        callbacks, self._requirements_check_callbacks = self._requirements_check_callbacks, []
+        for callback in callbacks:
+            callback()
 
     def force_check_requirements(self):
         """Wired to refreshStatusButton: an explicit recheck bypasses the 24h
@@ -1094,7 +1262,12 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             QMessageBox.warning(self, "No layers selected", "Select at least one layer to continue.")
             return
 
-        self.check_requirements()
+        # Re-verifies Node.js/GISPublisher presence in the background (in case
+        # either was installed/removed outside the plugin since the dialog
+        # opened) without blocking this click — see check_requirements().
+        self.check_requirements(on_done=lambda: self._continue_run_clicked(selected_layers))
+
+    def _continue_run_clicked(self, selected_layers):
         if not self.requirements_met():
             QMessageBox.warning(
                 self,
@@ -1163,7 +1336,10 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             # so the config's parent directory and gispublisher's cwd have to be
             # the same place for this to be found at all (see gispublisher_runner
             # .start()'s generate branch).
-            config_path = build_deploy_config("local", {}, name=name, version=version, dest_dir=self.output_dir)
+            config_path = build_deploy_config(
+                "local", {}, name=name, version=version, dest_dir=self.output_dir,
+                gispublisher_root=self._gispublisher_root,
+            )
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
             return
@@ -1182,24 +1358,39 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             output_text=progress_dialog.outputText,
             parent=self,
             debug=self.DEBUG,
-            finished_callback=lambda: self.on_generate_finished(progress_dialog, config_path),
+            finished_callback=lambda: self.on_generate_finished(progress_dialog, config_path, len(selected_layers)),
         )
         progress_dialog.closeButton.clicked.connect(self.runner.cancel)
 
         try:
-            self.runner.start(generate=True, config_path=config_path)
+            self.runner.start(generate=True, config_path=config_path, gispub_path=self._gispub_path)
         except Exception as e:
             progress_dialog.close()
             os.remove(config_path)
             QMessageBox.critical(self, "Error", str(e))
 
-    def on_generate_finished(self, progress_dialog, config_path):
+    def on_generate_finished(self, progress_dialog, config_path, layer_count):
         progress_dialog.set_finished_state()
         progress_dialog.closeButton.clicked.disconnect()
         progress_dialog.closeButton.clicked.connect(progress_dialog.close)
         if not self.DEBUG:
             progress_dialog.close()
         os.remove(config_path)
+
+        # Recorded so the log stays reachable from History even after the
+        # (auto-closing) progress dialog is gone — previously a Generate run
+        # left no trace at all once its dialog closed.
+        state_store.append_run_record(
+            run_type="generate",
+            project_title=QgsProject.instance().title() or QgsProject.instance().baseName(),
+            layer_count=layer_count,
+            chart_count=len(self.get_selected_chart_items() or []),
+            model_count=len(self.get_selected_model_entries()),
+            exit_code=getattr(self.runner, "exit_code", -1),
+            duration_seconds=self.runner.duration_seconds(),
+            log_lines=self.runner.log_lines,
+            output_dir=self.output_dir,
+        )
 
     def run_deploy(self, selected_layers):
         missing = self.validate_deploy_fields()
@@ -1218,7 +1409,10 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         version = self.appVersionEdit.text().strip() or "1.0.0"
 
         try:
-            config_path = build_deploy_config(deploy_type, fields, name=name, version=version)
+            config_path = build_deploy_config(
+                deploy_type, fields, name=name, version=version,
+                gispublisher_root=self._gispublisher_root,
+            )
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
             return
@@ -1249,7 +1443,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         progress_dialog.closeButton.clicked.connect(self.runner.cancel)
 
         try:
-            self.runner.start(config_path=config_path)
+            self.runner.start(config_path=config_path, gispub_path=self._gispub_path)
         except Exception as e:
             progress_dialog.close()
             os.remove(config_path)
@@ -1267,7 +1461,8 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         model_count = len(self.get_selected_model_entries())
         project = QgsProject.instance()
 
-        state_store.append_deploy_record(
+        state_store.append_run_record(
+            run_type="deploy",
             project_title=project.title() or project.baseName(),
             deploy_type=deploy_type,
             host=self.runner.resulting_host or fields.get("host", ""),
@@ -1279,4 +1474,3 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             log_lines=self.runner.log_lines,
             deploy_fields=fields,
         )
-        self.load_history()

@@ -146,8 +146,13 @@ def get_npm_prefix():
     return result.stdout.strip()
 
 
-def find_gispublisher():
-    """Locate the gispublisher executable, cross-platform."""
+def find_gispublisher(npm_prefix=None):
+    """Locate the gispublisher executable, cross-platform.
+
+    `npm_prefix`, if given, skips the `npm config get prefix` subprocess call
+    (used by gather_requirements(), which resolves it once and threads it
+    through every lookup that would otherwise repeat it).
+    """
     # Check PATH first
     gispub = shutil.which("gispublisher") or shutil.which("gispublisher.cmd")
     if gispub:
@@ -155,7 +160,7 @@ def find_gispublisher():
 
     # Derive from npm prefix
     try:
-        prefix = get_npm_prefix()
+        prefix = npm_prefix if npm_prefix is not None else get_npm_prefix()
         if sys.platform == "win32":
             candidates = [
                 os.path.join(prefix, "gispublisher.cmd"),
@@ -176,7 +181,7 @@ def find_gispublisher():
     )
 
 
-def get_installed_gispublisher_version(gispub_path):
+def get_installed_gispublisher_version(gispub_path, npm_prefix=None):
     """Best-effort installed @lbdudc/gis-publisher version.
 
     Reads straight from the package's own package.json where possible (cheap,
@@ -184,10 +189,13 @@ def get_installed_gispublisher_version(gispub_path):
     what the CLI itself answers with, wired automatically by meow's
     `importMeta` (gispublisher/src/cli.js). Returns None rather than raising:
     an unknown installed version shouldn't block the rest of check_requirements.
+
+    `npm_prefix`, if given, skips the `npm config get prefix` subprocess call
+    (see find_gispublisher's docstring — same rationale).
     """
     candidates = []
     try:
-        prefix = get_npm_prefix()
+        prefix = npm_prefix if npm_prefix is not None else get_npm_prefix()
         if sys.platform == "win32":
             candidates.append(os.path.join(prefix, "node_modules", "@lbdudc", "gis-publisher", "package.json"))
         else:
@@ -199,7 +207,7 @@ def get_installed_gispublisher_version(gispub_path):
         # Deferred import: deploy_config imports find_npm from this module, so a
         # module-level import here would be circular.
         from .deploy_config import get_gispublisher_root
-        candidates.append(os.path.join(str(get_gispublisher_root()), "package.json"))
+        candidates.append(os.path.join(str(get_gispublisher_root(npm_prefix)), "package.json"))
     except Exception:  # nosec B110
         pass
 
@@ -298,3 +306,55 @@ def should_check_for_update(last_check_epoch, now_epoch, interval_seconds=UPDATE
     if not last_check_epoch:
         return True
     return (now_epoch - last_check_epoch) >= interval_seconds
+
+
+def gather_requirements():
+    """Run every Node.js/GISPublisher presence-and-version check in one pass.
+
+    Between find_node, find_gispublisher, get_installed_gispublisher_version and
+    (transitively) get_gispublisher_root, this can spawn several npm/node
+    subprocesses — each of which routinely takes a second or more on Windows
+    (cmd.exe + npm's own startup cost). This resolves the npm prefix at most
+    once and threads it through every lookup that would otherwise repeat it,
+    and is meant to be called from a background QThread
+    (qgispublisher_dialog.RequirementsCheckThread) — never the UI thread.
+    """
+    node_result = find_node()
+
+    npm_prefix = None
+    try:
+        npm_prefix = get_npm_prefix()
+    except Exception:  # nosec B110 - individual lookups below fall back on their own
+        pass
+
+    try:
+        gispub_path = find_gispublisher(npm_prefix=npm_prefix)
+        gispub_ok = True
+        gispub_message = f"GISPublisher found at: {gispub_path}"
+    except Exception as e:
+        gispub_path = None
+        gispub_ok = False
+        gispub_message = str(e)
+
+    installed_version = (
+        get_installed_gispublisher_version(gispub_path, npm_prefix=npm_prefix)
+        if gispub_ok else None
+    )
+
+    gispublisher_root = None
+    if gispub_ok:
+        try:
+            # Deferred import: see get_installed_gispublisher_version's docstring.
+            from .deploy_config import get_gispublisher_root
+            gispublisher_root = str(get_gispublisher_root(npm_prefix))
+        except Exception:  # nosec B110 - build_deploy_config() falls back to its own lookup
+            gispublisher_root = None
+
+    return {
+        "node_result": node_result,
+        "gispub_path": gispub_path,
+        "gispub_ok": gispub_ok,
+        "gispub_message": gispub_message,
+        "installed_version": installed_version,
+        "gispublisher_root": gispublisher_root,
+    }

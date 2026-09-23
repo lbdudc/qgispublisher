@@ -1,24 +1,36 @@
 import json
 import pathlib
 import subprocess
+import sys
 import tempfile
 
 from .dependencies_checker import find_npm
 
 
-def get_gispublisher_root():
-    """Return the install path of the @lbdudc/gis-publisher npm package."""
-    npm_path = find_npm()
-    result = subprocess.run(  # nosec B603 - npm_path is a fully-resolved path from shutil.which()
-        [npm_path, "root", "-g"],
-        capture_output=True,
-        text=True,
-    )
-    npm_root = pathlib.Path(result.stdout.strip())
+def get_gispublisher_root(npm_prefix=None):
+    """Return the install path of the @lbdudc/gis-publisher npm package.
+
+    Pass `npm_prefix` (an already-resolved `npm config get prefix` value) to
+    avoid spawning `npm root -g` — used by dependencies_checker.gather_requirements(),
+    which already paid for one npm prefix lookup and derives this the same way
+    npm itself would (`<prefix>/node_modules` on Windows, `<prefix>/lib/node_modules`
+    elsewhere), so a caller that already has the prefix never needs a second
+    npm subprocess just for this.
+    """
+    if npm_prefix is None:
+        npm_path = find_npm()
+        result = subprocess.run(  # nosec B603 - npm_path is a fully-resolved path from shutil.which()
+            [npm_path, "root", "-g"],
+            capture_output=True,
+            text=True,
+        )
+        npm_root = pathlib.Path(result.stdout.strip())
+    else:
+        npm_root = pathlib.Path(npm_prefix) / ("node_modules" if sys.platform == "win32" else "lib/node_modules")
     return npm_root / "@lbdudc" / "gis-publisher"
 
 
-def build_deploy_config(deploy_type, fields, name="test", version="1.0.0", dest_dir=None):
+def build_deploy_config(deploy_type, fields, name="test", version="1.0.0", dest_dir=None, gispublisher_root=None):
     """Write a temporary GISPublisher config JSON and return its path.
 
     `fields` holds the plain string/int values collected from the deploy form
@@ -32,9 +44,16 @@ def build_deploy_config(deploy_type, fields, name="test", version="1.0.0", dest_
     double as gispublisher's cwd (its --config resolution is cwd-relative,
     with no support for an absolute path), letting the CLI's "output" folder
     land in the user's chosen output directory instead of a temp one.
+
+    `gispublisher_root`, when given, skips get_gispublisher_root()'s own
+    lookup entirely (which otherwise spawns `npm root -g`) — callers that
+    already resolved it via a requirements check (see qgispublisher_dialog's
+    self._gispublisher_root) should pass it so this never blocks on a fresh
+    npm subprocess right before a run starts.
     """
-    gispublisher_root = get_gispublisher_root()
-    platform_dir = gispublisher_root / "node_modules" / "@lbdudc" / "mini-lps" / "src" / "platform"
+    if gispublisher_root is None:
+        gispublisher_root = get_gispublisher_root()
+    platform_dir = pathlib.Path(gispublisher_root) / "node_modules" / "@lbdudc" / "mini-lps" / "src" / "platform"
 
     base_json = {
         "name": name,

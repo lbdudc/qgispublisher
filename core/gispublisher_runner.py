@@ -1,6 +1,6 @@
 import dataclasses, json, os, re, tempfile, pathlib, shutil, time
 from qgis.PyQt.QtCore import QProcess, QUrl
-from qgis.PyQt.QtWidgets import QMessageBox
+from qgis.PyQt.QtWidgets import QApplication, QMessageBox
 from qgis.PyQt.QtGui import QDesktopServices
 from qgis.core import QgsMapLayer, QgsProject
 from ..core.dependencies_checker import check_node_gispublisher
@@ -208,6 +208,16 @@ class GISPublisherRunner:
         plan_by_id = {plan.layer_id: plan for plan in plans}
 
         for layer, descriptor in zip(vector_layers, vector_descriptors):
+            if self.cancelled:
+                return
+            # Exporting/writing styles for a layer with many features can take a
+            # noticeable moment (QgsVectorFileWriter, SLD export) — repaint the
+            # progress dialog and show which layer is being processed instead of
+            # leaving the UI thread (and the dialog) looking frozen for the
+            # whole staging step.
+            self.progress_label.setText(f"Exporting {layer.name()}...")
+            QApplication.processEvents()
+
             plan = plan_by_id[layer.id()]
             dest_dir = self._dest_dir_for(layer, tree_info, group_dir_by_name)
             ok, message = layer_export.export_layer(layer, plan, dest_dir, self.target_crs)
@@ -243,6 +253,11 @@ class GISPublisherRunner:
                 shapefile_io.rewrite_unsupported_marks(dest_sld)
 
         for layer in local_raster_layers:
+            if self.cancelled:
+                return
+            self.progress_label.setText(f"Exporting {layer.name()}...")
+            QApplication.processEvents()
+
             staged_basename = basename_by_id[layer.id()]
             dest_dir = self._dest_dir_for(layer, tree_info, group_dir_by_name)
             ok, message = layer_export.export_raster(layer, staged_basename, dest_dir)
@@ -273,7 +288,10 @@ class GISPublisherRunner:
 
     def copy_chart_folder(self):
         if self.chart_folder and os.path.exists(self.chart_folder):
+            self.progress_label.setText("Staging chart files...")
             for item in os.listdir(self.chart_folder):
+                if self.cancelled:
+                    return
                 if self.chart_items is not None and item not in self.chart_items:
                     continue
                 src_path = os.path.join(self.chart_folder, item)
@@ -285,14 +303,20 @@ class GISPublisherRunner:
                     shutil.copy2(src_path, dst_path)
                 elif os.path.isdir(src_path):
                     shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
+                QApplication.processEvents()
 
     def copy_model_folder(self):
+        if self.model_entries:
+            self.progress_label.setText("Staging models...")
         for entry in self.model_entries:
+            if self.cancelled:
+                return
             dest_path = model_discovery.stage_model(entry, self.models_temp_dir)
             if dest_path is None:
                 self.log_lines.append(
                     f"[WARN] Could not stage model '{entry.display_name}' ({entry.source})"
                 )
+            QApplication.processEvents()
 
     def _write_project_manifest(self):
         """Stage qgis-project.json (see core.project_manifest and
@@ -316,17 +340,37 @@ class GISPublisherRunner:
         except Exception as e:
             self.log_lines.append(f"[WARN] Could not write QGIS project manifest: {e}")
 
-    def start(self, generate=False, config_path=None):
-        gispub_path = check_node_gispublisher()
-        args = []
+    def start(self, generate=False, config_path=None, gispub_path=None):
+        """`gispub_path`, if given, skips check_node_gispublisher()'s own
+        find_node()/find_gispublisher() lookup (which can itself spawn a
+        blocking npm subprocess) — callers that already resolved it via a
+        requirements check (e.g. qgispublisher_dialog's self._gispub_path)
+        should always pass it. It's only re-resolved here as a fallback for
+        callers that haven't (e.g. tests driving the runner directly)."""
+        if not generate and not config_path:
+            raise ValueError("start() requires either generate=True or a config_path")
+
+        gispub_path = gispub_path or check_node_gispublisher()
 
         self.generate = generate
         self._start_time = time.time()
+        self._begin_progress_ui()
+
         self.copy_layers_directly()
+        if self.cancelled:
+            self._report_cancelled()
+            return
         self._write_project_manifest()
         self.copy_chart_folder()
+        if self.cancelled:
+            self._report_cancelled()
+            return
         self.copy_model_folder()
+        if self.cancelled:
+            self._report_cancelled()
+            return
 
+        args = []
         if generate:
             shapefiles_folder = self.temp_dir
             args.append(shapefiles_folder)
@@ -345,7 +389,7 @@ class GISPublisherRunner:
                 args.append("--config")
                 args.append(config_path.name)
                 working_dir = str(config_path.parent)
-        elif config_path:  # deploy
+        else:  # deploy (config_path is required — validated above)
             shapefiles_folder = self.temp_dir
             config_path = pathlib.Path(config_path)
 
@@ -353,20 +397,41 @@ class GISPublisherRunner:
             args.append("--config")
             args.append(config_path.name)
             working_dir = str(config_path.parent)
-        else:
-            raise ValueError("start() requires either generate=True or a config_path")
         self.run_gispublisher(gispub_path, args, working_dir)
 
-    def run_gispublisher(self, gispub_path, args, working_dir=None):
-        self.progress_label.setText("Running GISPublisher...")
+    def _begin_progress_ui(self):
+        """Show the progress dialog's busy indicator and log immediately, before
+        the (I/O-heavy) layer staging below even starts — previously this only
+        happened in run_gispublisher(), at the very end of staging, so the
+        dialog sat there blank/unresponsive for the entire staging step."""
+        self.progress_label.setText("Preparing layers...")
         self.progress_label.setVisible(True)
         self.progress_bar.setVisible(True)
         # Real progress isn't reported by the GISPublisher CLI, so show a busy
         # (indeterminate) bar instead of a fake, misleading percentage.
         self.progress_bar.setRange(0, 0)
-
         if self.output_text:
             self.output_text.clear()
+            self.output_text.appendPlainText("> Staging layers...\n")
+        QApplication.processEvents()
+
+    def _report_cancelled(self):
+        """Mirrors finished()'s cancelled branch — used when Cancel is clicked
+        during staging, before the gispublisher QProcess (whose own `finished`
+        signal normally drives this) even exists."""
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("GISPublisher cancelled")
+        if self.output_text:
+            self.output_text.appendPlainText("\n> Process cancelled by user.")
+        self.exit_code = -1
+        if self.finished_callback:
+            self.finished_callback()
+
+    def run_gispublisher(self, gispub_path, args, working_dir=None):
+        self.progress_label.setText("Running GISPublisher...")
+
+        if self.output_text:
             self.output_text.appendPlainText("> Starting GISPublisher...\n")
 
         for layer_name, ok, message in self.export_results:

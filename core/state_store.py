@@ -1,5 +1,5 @@
 """Persistence for the plugin: per-project selections saved in the .qgz, and a
-profile-scoped deployment history.
+profile-scoped run history (both Generate and Deploy runs).
 
 Per-project state uses ``QgsProject.writeEntry``/``readEntry``, the idiomatic QGIS
 mechanism for plugin state that should travel with the project and survive a QGIS
@@ -107,7 +107,7 @@ def has_saved_selection(project):
 
 
 # ----------------------------------------------------------------------
-# Deployment history (profile-scoped JSON, no secrets)
+# Run history — Generate and Deploy alike (profile-scoped JSON, no secrets)
 # ----------------------------------------------------------------------
 
 def _history_path():
@@ -116,10 +116,10 @@ def _history_path():
     settings_dir = QgsApplication.qgisSettingsDirPath()
     plugin_dir = os.path.join(settings_dir, "GISPublisher")
     os.makedirs(plugin_dir, exist_ok=True)
-    return os.path.join(plugin_dir, "deploy_history.json")
+    return os.path.join(plugin_dir, "run_history.json")
 
 
-def load_deploy_history():
+def load_run_history():
     path = _history_path()
     if not os.path.isfile(path):
         return []
@@ -133,7 +133,7 @@ def load_deploy_history():
     return []
 
 
-def _save_deploy_history(records):
+def _save_run_history(records):
     path = _history_path()
     tmp_path = path + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
@@ -141,21 +141,28 @@ def _save_deploy_history(records):
     os.replace(tmp_path, path)
 
 
-def append_deploy_record(
+def append_run_record(
+    run_type,
     project_title,
-    deploy_type,
-    host,
     layer_count,
     chart_count,
     model_count,
     exit_code,
     duration_seconds,
     log_lines,
+    deploy_type=None,
+    host=None,
     deploy_fields=None,
+    output_dir=None,
 ):
-    """Record a finished deploy run. `deploy_fields` should be the raw fields dict
-    collected from the deploy form; only the non-secret subset for `deploy_type` is
-    kept (see `_RESTORABLE_DEPLOY_FIELDS`) — credentials are never written to disk.
+    """Record a finished Generate or Deploy run, so its log stays reachable from
+    the History panel even after the progress dialog that ran it has closed.
+
+    `run_type` is "generate" or "deploy". `deploy_type`/`host`/`deploy_fields`
+    are deploy-only: `deploy_fields` should be the raw fields dict collected
+    from the deploy form; only the non-secret subset for `deploy_type` is kept
+    (see `_RESTORABLE_DEPLOY_FIELDS`) — credentials are never written to disk.
+    `output_dir` is generate-only: the local folder the product was written to.
     """
     restorable = {}
     if deploy_fields:
@@ -165,9 +172,11 @@ def append_deploy_record(
 
     record = {
         "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+        "run_type": run_type,
         "project_title": project_title or "",
-        "deploy_type": deploy_type,
+        "deploy_type": deploy_type or "",
         "host": host or "",
+        "output_dir": output_dir or "",
         "layer_count": layer_count,
         "chart_count": chart_count,
         "model_count": model_count,
@@ -177,12 +186,12 @@ def append_deploy_record(
         "restorable_fields": restorable,
     }
 
-    records = load_deploy_history()
+    records = load_run_history()
     records.append(record)
     records = records[-HISTORY_MAX_ENTRIES:]
-    _save_deploy_history(records)
+    _save_run_history(records)
     return record
 
 
-def clear_deploy_history():
-    _save_deploy_history([])
+def clear_run_history():
+    _save_run_history([])
