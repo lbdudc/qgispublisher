@@ -804,7 +804,66 @@
                        </widget>
                       </item>
                       <item row="3" column="1">
-                       <widget class="QLineEdit" name="awsRegionEdit"/>
+                       <widget class="QComboBox" name="awsRegionEdit">
+                        <property name="editable">
+                         <bool>true</bool>
+                        </property>
+                        <item>
+                         <property name="text">
+                          <string>us-east-1</string>
+                         </property>
+                        </item>
+                        <item>
+                         <property name="text">
+                          <string>us-east-2</string>
+                         </property>
+                        </item>
+                        <item>
+                         <property name="text">
+                          <string>us-west-1</string>
+                         </property>
+                        </item>
+                        <item>
+                         <property name="text">
+                          <string>us-west-2</string>
+                         </property>
+                        </item>
+                        <item>
+                         <property name="text">
+                          <string>eu-west-1</string>
+                         </property>
+                        </item>
+                        <item>
+                         <property name="text">
+                          <string>eu-west-2</string>
+                         </property>
+                        </item>
+                        <item>
+                         <property name="text">
+                          <string>eu-central-1</string>
+                         </property>
+                        </item>
+                        <item>
+                         <property name="text">
+                          <string>ap-southeast-1</string>
+                         </property>
+                        </item>
+                        <item>
+                         <property name="text">
+                          <string>ap-southeast-2</string>
+                         </property>
+                        </item>
+                        <item>
+                         <property name="text">
+                          <string>ap-northeast-1</string>
+                         </property>
+                        </item>
+                        <item>
+                         <property name="text">
+                          <string>sa-east-1</string>
+                         </property>
+                        </item>
+                       </widget>
                       </item>
                      </layout>
                     </widget>
@@ -843,7 +902,56 @@
                        </widget>
                       </item>
                       <item row="2" column="1">
-                       <widget class="QLineEdit" name="awsInstanceTypeEdit"/>
+                       <widget class="QComboBox" name="awsInstanceTypeEdit">
+                        <property name="editable">
+                         <bool>true</bool>
+                        </property>
+                        <item>
+                         <property name="text">
+                          <string>t3.micro</string>
+                         </property>
+                        </item>
+                        <item>
+                         <property name="text">
+                          <string>t3.small</string>
+                         </property>
+                        </item>
+                        <item>
+                         <property name="text">
+                          <string>t3.medium</string>
+                         </property>
+                        </item>
+                        <item>
+                         <property name="text">
+                          <string>t3.large</string>
+                         </property>
+                        </item>
+                        <item>
+                         <property name="text">
+                          <string>t2.micro</string>
+                         </property>
+                        </item>
+                        <item>
+                         <property name="text">
+                          <string>t2.small</string>
+                         </property>
+                        </item>
+                        <item>
+                         <property name="text">
+                          <string>t2.medium</string>
+                         </property>
+                        </item>
+                        <item>
+                         <property name="text">
+                          <string>m5.large</string>
+                         </property>
+                        </item>
+                        <item>
+                         <property name="text">
+                          <string>m5.xlarge</string>
+                         </property>
+                        </item>
+                       </widget>
                       </item>
                       <item row="3" column="0">
                        <widget class="QLabel" name="awsInstanceNameLabel">

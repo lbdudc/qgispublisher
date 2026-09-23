@@ -8,6 +8,7 @@ from qgis.PyQt.QtCore import Qt, QThread, pyqtSignal
 from qgis.PyQt.QtGui import QIcon, QKeySequence
 from qgis.PyQt.QtWidgets import (
     QAction,
+    QComboBox,
     QDialog,
     QFileDialog,
     QHeaderView,
@@ -944,6 +945,13 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             return "ssh"
         return "aws"
 
+    @staticmethod
+    def _field_text(widget):
+        """awsRegionEdit/awsInstanceTypeEdit are editable QComboBox (a preset
+        dropdown the user can still type over); every other deploy field is a
+        plain QLineEdit. This reads either uniformly."""
+        return widget.currentText() if isinstance(widget, QComboBox) else widget.text()
+
     def validate_deploy_fields(self):
         """Return a list of missing required field labels for the selected deployment type."""
         deploy_type = self.current_deploy_type()
@@ -956,7 +964,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
                 (self.sshCertRouteEdit, "Private key path"),
                 (self.sshRemoteRepoPathEdit, "Remote repository path"),
             ]
-            missing.extend(label for widget, label in required if not widget.text().strip())
+            missing.extend(label for widget, label in required if not self._field_text(widget).strip())
 
         elif deploy_type == "aws":
             required = [
@@ -972,7 +980,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
                 (self.awsSshKeyPathEdit, "SSH key path"),
                 (self.awsRemotePathEdit, "Remote repository path"),
             ]
-            missing.extend(label for widget, label in required if not widget.text().strip())
+            missing.extend(label for widget, label in required if not self._field_text(widget).strip())
 
         return missing
 
@@ -993,9 +1001,9 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             fields = {
                 "access_key": self.awsAccessKeyEdit.text(),
                 "secret_key": self.awsSecretAccessKeyEdit.text(),
-                "region": self.awsRegionEdit.text(),
+                "region": self.awsRegionEdit.currentText(),
                 "ami_id": self.awsAmiIdEdit.text(),
-                "instance_type": self.awsInstanceTypeEdit.text(),
+                "instance_type": self.awsInstanceTypeEdit.currentText(),
                 "instance_name": self.awsInstanceNameEdit.text(),
                 "security_group": self.awsSecurityGroupEdit.text(),
                 "key_name": self.awsKeyNameEdit.text(),
@@ -1046,6 +1054,8 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
                     widget.setValue(int(value))
                 except (TypeError, ValueError):
                     pass
+            elif isinstance(widget, QComboBox):
+                widget.setCurrentText(str(value))
             else:
                 widget.setText(str(value))
 
