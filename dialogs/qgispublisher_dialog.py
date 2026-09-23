@@ -5,7 +5,7 @@ import time
 
 from qgis.PyQt import uic
 from qgis.PyQt.QtCore import Qt, QThread, pyqtSignal
-from qgis.PyQt.QtGui import QIcon
+from qgis.PyQt.QtGui import QIcon, QKeySequence
 from qgis.PyQt.QtWidgets import (
     QAction,
     QDialog,
@@ -212,6 +212,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
 
         self.setup_deploy_help()
         self.setup_icons()
+        self.setup_shortcuts()
         self.update_action_stack()
         self.update_deploy_stack()
 
@@ -385,6 +386,26 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         for col in LAYER_DETAIL_COLUMNS:
             self.layersTable.setColumnHidden(col, not detailed)
 
+    @staticmethod
+    def _vector_layer_issues(descriptor):
+        """Non-fatal problems with a vector LayerDescriptor — shared by
+        layersTable's per-row warning icon/tooltip (_describe_layer_for_table)
+        and the pre-run confirm dialog (_layers_with_warnings), so the two
+        never disagree about what counts as an issue."""
+        issues = []
+        if not descriptor.crs_authid:
+            issues.append("No CRS set — will be published without a defined projection.")
+        if descriptor.feature_count == 0:
+            issues.append("Layer has no features.")
+        if not descriptor.has_geometry:
+            issues.append("Attribute-only table (no geometry).")
+        if len(descriptor.field_names) > layer_export.MAX_DBF_FIELDS:
+            issues.append(
+                f"{len(descriptor.field_names)} fields exceeds the {layer_export.MAX_DBF_FIELDS}-field "
+                "shapefile limit — extra fields will be dropped."
+            )
+        return issues
+
     def _describe_layer_for_table(self, layer, group):
         """Build one layersTable row's cell text (name/type/features/CRS/group),
         full tooltip, and whether it needs a warning icon.
@@ -403,18 +424,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             crs = descriptor.crs_authid or "no CRS"
             count = descriptor.feature_count
 
-            issues = []
-            if not descriptor.crs_authid:
-                issues.append("No CRS set — will be published without a defined projection.")
-            if count == 0:
-                issues.append("Layer has no features.")
-            if not descriptor.has_geometry:
-                issues.append("Attribute-only table (no geometry).")
-            if len(descriptor.field_names) > layer_export.MAX_DBF_FIELDS:
-                issues.append(
-                    f"{len(descriptor.field_names)} fields exceeds the {layer_export.MAX_DBF_FIELDS}-field "
-                    "shapefile limit — extra fields will be dropped."
-                )
+            issues = self._vector_layer_issues(descriptor)
 
             tooltip_parts = [
                 f"Source: {descriptor.source}",
@@ -676,21 +686,46 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
                 rejected.append((layer.name(), plan.message))
         return rejected
 
+    def _layers_with_warnings(self, selected_layers):
+        """Non-fatal per-layer issues among checked vector layers (no CRS,
+        empty, no geometry, too many fields) — the same source as
+        layersTable's warning icon/tooltip (_vector_layer_issues). Unlike
+        _rejected_raster_layers, these layers still get published; they just
+        may not look/behave as expected, so it's worth a heads-up before a
+        run rather than only ever seeing it as a tooltip someone has to
+        happen to hover."""
+        warned = []
+        for layer in selected_layers:
+            if layer.type() != QgsMapLayer.LayerType.VectorLayer:
+                continue
+            issues = self._vector_layer_issues(layer_export.describe_layer(layer))
+            if issues:
+                warned.append((layer.name(), issues))
+        return warned
+
     def _validate_checked_layers(self, selected_layers):
         """Blocking (confirm-to-proceed) check run before Generate/Deploy: warns
-        about any selected layer that's known upfront to be unpublishable, so it's
-        never silently dropped without the user having a chance to uncheck it."""
+        about any selected layer that's known upfront to be unpublishable
+        (skipped entirely) or merely flagged (still published, but with an
+        issue), so nothing about the run is a surprise the user didn't have a
+        chance to fix or accept first."""
         rejected = self._rejected_raster_layers(selected_layers)
-        if not rejected:
+        warned = self._layers_with_warnings(selected_layers)
+        if not rejected and not warned:
             return True
 
-        lines = [f"- {name}: {message}" for name, message in rejected]
+        sections = []
+        if rejected:
+            lines = [f"- {name}: {message}" for name, message in rejected]
+            sections.append("Will be skipped entirely:\n" + "\n".join(lines))
+        if warned:
+            lines = [f"- {name}: {'; '.join(issues)}" for name, issues in warned]
+            sections.append("Will publish, but flagged:\n" + "\n".join(lines))
+
         reply = QMessageBox.warning(
             self,
-            "Unsupported layers",
-            "The following selected layer(s) can't be published and will be skipped:\n\n"
-            + "\n".join(lines)
-            + "\n\nContinue anyway?",
+            "Layer issues",
+            "\n\n".join(sections) + "\n\nContinue anyway?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -862,6 +897,24 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
 
         self.runButton.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.cancelButton.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DialogCancelButton))
+
+    def setup_shortcuts(self):
+        """A couple of cheap keyboard shortcuts for the two most-repeated
+        actions — QAction (not QShortcut) to match add_browse_action's already
+        Qt5/Qt6-proven import path (qgis.PyQt.QtWidgets), rather than pulling
+        in a second, possibly version-sensitive Qt shortcut API."""
+        run_shortcut = QAction(self)
+        run_shortcut.setShortcut(QKeySequence("Ctrl+Return"))
+        run_shortcut.triggered.connect(self.runButton.click)
+        self.addAction(run_shortcut)
+
+        history_shortcut = QAction(self)
+        history_shortcut.setShortcut(QKeySequence("Ctrl+H"))
+        history_shortcut.triggered.connect(self.historyButton.click)
+        self.addAction(history_shortcut)
+
+        self.runButton.setToolTip("Ctrl+Enter")
+        self.historyButton.setToolTip("Ctrl+H")
 
     def add_browse_action(self, line_edit, dialog_title):
         """Add a clickable folder icon inside a QLineEdit to browse for a file."""
