@@ -17,8 +17,6 @@ network drive).
 import os
 import shutil
 
-from qgis.core import QgsApplication, QgsProcessingModelAlgorithm
-
 SOURCE_PROJECT = "Project"
 SOURCE_PROFILE = "Profile"
 SOURCE_FOLDER = "Folder"
@@ -50,6 +48,12 @@ class ModelEntry:
 
 
 def _provider_models(provider_id, source_label):
+    # Deferred: keeps this module importable (and discover_all_models's pure
+    # dedup logic, ModelEntry, discover_folder_models and stage_model
+    # testable) outside a running QGIS — same convention as state_store.py's
+    # _history_path().
+    from qgis.core import QgsApplication, QgsProcessingModelAlgorithm
+
     registry = QgsApplication.processingRegistry()
     provider = registry.providerById(provider_id)
     if provider is None:
