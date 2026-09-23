@@ -758,6 +758,16 @@
                    <item row="5" column="1">
                     <widget class="QLineEdit" name="sshRemoteRepoPathEdit"/>
                    </item>
+                   <item row="6" column="1">
+                    <widget class="QPushButton" name="sshTestConnectionButton">
+                     <property name="text">
+                      <string>Test connection</string>
+                     </property>
+                     <property name="toolTip">
+                      <string>Check the host is reachable and (if an ssh client is available) that the username/key authenticate</string>
+                     </property>
+                    </widget>
+                   </item>
                   </layout>
                  </widget>
                  <widget class="QWidget" name="pageAWS">
@@ -869,6 +879,16 @@
                           <string>sa-east-1</string>
                          </property>
                         </item>
+                       </widget>
+                      </item>
+                      <item row="4" column="1">
+                       <widget class="QPushButton" name="awsTestCredentialsButton">
+                        <property name="text">
+                         <string>Test credentials</string>
+                        </property>
+                        <property name="toolTip">
+                         <string>Verify the access key/secret/region via `aws sts get-caller-identity` (requires the AWS CLI)</string>
+                        </property>
                        </widget>
                       </item>
                      </layout>

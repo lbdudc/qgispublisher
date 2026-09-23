@@ -36,7 +36,7 @@ from ..core.dependencies_checker import (
 )
 from ..core.deploy_config import build_deploy_config
 from ..core.gispublisher_runner import GISPublisherRunner, cleanup_old_temp_dirs
-from ..core import model_discovery, state_store, chart_builder, layer_export, naming, project_manifest
+from ..core import model_discovery, state_store, chart_builder, connection_test, layer_export, naming, project_manifest
 
 FORM_CLASS, _ = uic.loadUiType(
     os.path.join(os.path.dirname(__file__), "ui", "gispublisher_dialog.ui")
@@ -155,6 +155,40 @@ class RequirementsCheckThread(QThread):
         self.finished_check.emit(gather_requirements())
 
 
+class SshTestThread(QThread):
+    """Runs connection_test.test_ssh_connection() off the UI thread — a TCP
+    connect plus (if `ssh` is on PATH) a real auth handshake, either of which
+    can take several seconds against an unreachable/slow host."""
+
+    result = pyqtSignal(bool, str)
+
+    def __init__(self, host, port, username, cert_path, parent=None):
+        super().__init__(parent)
+        self.host = host
+        self.port = port
+        self.username = username
+        self.cert_path = cert_path
+
+    def run(self):
+        self.result.emit(*connection_test.test_ssh_connection(self.host, self.port, self.username, self.cert_path))
+
+
+class AwsTestThread(QThread):
+    """Runs connection_test.test_aws_credentials() (an `aws sts
+    get-caller-identity` subprocess) off the UI thread."""
+
+    result = pyqtSignal(bool, str)
+
+    def __init__(self, access_key, secret_key, region, parent=None):
+        super().__init__(parent)
+        self.access_key = access_key
+        self.secret_key = secret_key
+        self.region = region
+
+    def run(self):
+        self.result.emit(*connection_test.test_aws_credentials(self.access_key, self.secret_key, self.region))
+
+
 class GISPublisherDialog(QDialog, FORM_CLASS):
     """Main plugin dialog: layers, optional charts/models, and a Generate/Deploy action."""
 
@@ -204,6 +238,11 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self.radioLocal.toggled.connect(self.update_deploy_stack)
         self.radioSSH.toggled.connect(self.update_deploy_stack)
         self.radioAWS.toggled.connect(self.update_deploy_stack)
+
+        self.sshTestConnectionButton.clicked.connect(self.test_ssh_connection)
+        self.awsTestCredentialsButton.clicked.connect(self.test_aws_credentials)
+        self._ssh_test_thread = None
+        self._aws_test_thread = None
 
         self.historyButton.clicked.connect(self.open_history_dialog)
 
@@ -1071,6 +1110,66 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             }
 
         return deploy_type, fields
+
+    # ------------------------------------------------------------------
+    # Deploy connection testing (SSH/AWS) — a bad host or credential
+    # previously only surfaced after committing to a full, multi-minute
+    # deploy attempt.
+    # ------------------------------------------------------------------
+
+    def test_ssh_connection(self):
+        if self._ssh_test_thread is not None and self._ssh_test_thread.isRunning():
+            return
+        host = self.sshHostEdit.text().strip()
+        username = self.sshUsernameEdit.text().strip()
+        cert_path = self.sshCertRouteEdit.text().strip()
+        if not host or not username or not cert_path:
+            QMessageBox.warning(
+                self, "Missing information",
+                "Fill in Host, Username and Private key path before testing the connection.",
+            )
+            return
+
+        self.sshTestConnectionButton.setEnabled(False)
+        self.sshTestConnectionButton.setText("Testing…")
+        self._ssh_test_thread = SshTestThread(host, self.sshPortEdit.value(), username, cert_path)
+        self._ssh_test_thread.result.connect(self._on_ssh_test_result)
+        self._ssh_test_thread.start()
+
+    def _on_ssh_test_result(self, ok, message):
+        self.sshTestConnectionButton.setEnabled(True)
+        self.sshTestConnectionButton.setText("Test connection")
+        if ok:
+            QMessageBox.information(self, "SSH connection", message)
+        else:
+            QMessageBox.warning(self, "SSH connection", message)
+
+    def test_aws_credentials(self):
+        if self._aws_test_thread is not None and self._aws_test_thread.isRunning():
+            return
+        access_key = self.awsAccessKeyEdit.text().strip()
+        secret_key = self.awsSecretAccessKeyEdit.text().strip()
+        region = self.awsRegionEdit.currentText().strip()
+        if not access_key or not secret_key:
+            QMessageBox.warning(
+                self, "Missing information",
+                "Fill in Access key and Secret key before testing credentials.",
+            )
+            return
+
+        self.awsTestCredentialsButton.setEnabled(False)
+        self.awsTestCredentialsButton.setText("Testing…")
+        self._aws_test_thread = AwsTestThread(access_key, secret_key, region)
+        self._aws_test_thread.result.connect(self._on_aws_test_result)
+        self._aws_test_thread.start()
+
+    def _on_aws_test_result(self, ok, message):
+        self.awsTestCredentialsButton.setEnabled(True)
+        self.awsTestCredentialsButton.setText("Test credentials")
+        if ok:
+            QMessageBox.information(self, "AWS credentials", message)
+        else:
+            QMessageBox.warning(self, "AWS credentials", message)
 
     # ------------------------------------------------------------------
     # Run history (Generate and Deploy alike) — a standalone HistoryDialog now
