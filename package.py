@@ -19,6 +19,13 @@ EXCLUDE_NAMES = {
     # would otherwise happily bundle an entire Vue/Spring Boot/docker-compose app
     # into the plugin zip.
     "product", "output", "spec.json", "spec.dsl",
+    # Local dev-tool caches: rglob walks the real filesystem, not git, so these
+    # get bundled into the shipped zip whenever they happen to exist locally at
+    # packaging time even though they're .gitignore'd and never git-tracked — a
+    # secrets scan on the published plugin flagged CACHEDIR.TAG's contents as a
+    # "high entropy string" (false positive: it's the Cache Directory Tagging
+    # Standard's fixed public header, not a secret) when this let one slip through.
+    ".pytest_cache", ".ruff_cache",
 }
 
 EXCLUDE_SUFFIXES = {".pyc", ".pyo", ".zip"}
