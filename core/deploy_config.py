@@ -1,4 +1,5 @@
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -106,8 +107,15 @@ def build_deploy_config(deploy_type, fields, name="test", version="1.0.0", dest_
 
     final_json = {**base_json, **deploy_section}
 
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".json", dir=dest_dir)
-    with open(temp_file.name, "w") as f:
+    # AWS/SSH deploy_section can carry real credentials (AWS_SECRET_ACCESS_KEY,
+    # key/cert paths) — mkstemp (not NamedTemporaryFile, which this used to
+    # reopen by path via a second open() call, leaking its own file handle)
+    # gives us the fd to chmod before anything is written to it, rather than
+    # relying on the platform default and hoping it's restrictive enough.
+    fd, path = tempfile.mkstemp(suffix=".json", dir=dest_dir)
+    if sys.platform != "win32":
+        os.chmod(path, 0o600)
+    with os.fdopen(fd, "w") as f:
         json.dump(final_json, f, indent=4)
 
-    return temp_file.name
+    return path

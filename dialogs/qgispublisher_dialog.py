@@ -1470,6 +1470,22 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             return True
         return False
 
+    @staticmethod
+    def _remove_config_file(config_path):
+        """Best-effort delete of a deploy config temp file — it can carry real
+        AWS/SSH credentials (see build_deploy_config), so every code path that
+        creates one calls this once done with it. Never lets a failed delete
+        (already gone, permissions, file locked) propagate: on_generate_finished/
+        on_deploy_finished call this before recording run history, and a
+        cleanup failure must never mean the run silently isn't recorded."""
+        try:
+            os.remove(config_path)
+        except OSError as e:
+            QgsMessageLog.logMessage(
+                f"Could not remove deploy config temp file {config_path}: {e}",
+                "GISPublisher", level=Qgis.Warning,
+            )
+
     def run_generate(self, selected_layers):
         if not self.output_dir:
             QMessageBox.warning(self, "Output folder required", "Select an output folder before generating.")
@@ -1515,7 +1531,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             self.runner.start(generate=True, config_path=config_path, gispub_path=self._gispub_path)
         except Exception as e:
             progress_dialog.close()
-            os.remove(config_path)
+            self._remove_config_file(config_path)
             QMessageBox.critical(self, "Error", str(e))
 
     def on_generate_finished(self, progress_dialog, config_path, layer_count):
@@ -1524,7 +1540,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         progress_dialog.closeButton.clicked.connect(progress_dialog.close)
         if not self.DEBUG:
             progress_dialog.close()
-        os.remove(config_path)
+        self._remove_config_file(config_path)
 
         # Recorded so the log stays reachable from History even after the
         # (auto-closing) progress dialog is gone — previously a Generate run
@@ -1595,7 +1611,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             self.runner.start(config_path=config_path, gispub_path=self._gispub_path)
         except Exception as e:
             progress_dialog.close()
-            os.remove(config_path)
+            self._remove_config_file(config_path)
             QMessageBox.critical(self, "Error", str(e))
 
     def on_deploy_finished(self, progress_dialog, config_path, deploy_type, fields, layer_count):
@@ -1604,7 +1620,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         progress_dialog.closeButton.clicked.connect(progress_dialog.close)
         if not self.DEBUG:
             progress_dialog.close()
-        os.remove(config_path)
+        self._remove_config_file(config_path)
 
         chart_count = len(self.get_selected_chart_items() or [])
         model_count = len(self.get_selected_model_entries())
