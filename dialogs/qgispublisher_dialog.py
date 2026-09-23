@@ -14,6 +14,7 @@ from qgis.PyQt.QtWidgets import (
     QLineEdit,
     QListWidgetItem,
     QMessageBox,
+    QSizePolicy,
     QStyle,
     QTableWidgetItem,
 )
@@ -744,11 +745,33 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
     # Action (Generate / Deploy) switching
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _shrink_stacked_widget_to_current_page(stacked_widget):
+        """QStackedWidget's own sizeHint() is the max over *every* page's
+        sizeHint, not just the visible one — so with actionStack/deployWidget,
+        the AWS deploy page (3 groupboxes) makes the stack reserve that much
+        height even while a much shorter page (Generate, Local, SSH) is
+        showing, leaving dead space below it. Giving every inactive page an
+        Ignored vertical size policy excludes it from that aggregate, so only
+        the current page determines the stack's height. updateGeometry()
+        propagates the size-hint change up through parent layouts normally,
+        so callers just need this after any setCurrentIndex()."""
+        current = stacked_widget.currentWidget()
+        for i in range(stacked_widget.count()):
+            page = stacked_widget.widget(i)
+            policy = page.sizePolicy()
+            policy.setVerticalPolicy(
+                QSizePolicy.Policy.Preferred if page is current else QSizePolicy.Policy.Ignored
+            )
+            page.setSizePolicy(policy)
+        stacked_widget.updateGeometry()
+
     def update_action_stack(self):
         if self.radioGenerate.isChecked():
             self.actionStack.setCurrentIndex(ACTION_PAGE_GENERATE)
         else:
             self.actionStack.setCurrentIndex(ACTION_PAGE_DEPLOY)
+        self._shrink_stacked_widget_to_current_page(self.actionStack)
 
     def select_output_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select output folder", "")
@@ -859,6 +882,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             self.deployWidget.setCurrentIndex(DEPLOY_PAGE_SSH)
         elif self.radioAWS.isChecked():
             self.deployWidget.setCurrentIndex(DEPLOY_PAGE_AWS)
+        self._shrink_stacked_widget_to_current_page(self.deployWidget)
 
     def current_deploy_type(self):
         if self.radioLocal.isChecked():
