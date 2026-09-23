@@ -12,8 +12,10 @@ from qgis.PyQt.QtWidgets import (
     QDialog,
     QFileDialog,
     QHeaderView,
+    QInputDialog,
     QLineEdit,
     QListWidgetItem,
+    QMenu,
     QMessageBox,
     QSizePolicy,
     QStyle,
@@ -188,6 +190,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self.selectChartFolderButton.clicked.connect(self.select_chart_folder)
         self.clearChartFolderButton.clicked.connect(self.clear_chart_folder)
         self.selectAllChartsButton.clicked.connect(lambda: self.toggle_all_checked(self.chartFilesList))
+        self.chartFilesList.customContextMenuRequested.connect(self.show_chart_context_menu)
 
         self.refreshModelsButton.clicked.connect(self.refresh_models_list)
         self.selectModelFolderButton.clicked.connect(self.select_model_folder)
@@ -525,6 +528,61 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         if not self.selected_chart_folder:
             return None
         return self.get_checked_texts(self.chartFilesList)
+
+    def show_chart_context_menu(self, pos):
+        """Right-click menu on a chart file — the only way to rename or
+        delete one used to be leaving the plugin for the OS file browser."""
+        item = self.chartFilesList.itemAt(pos)
+        if item is None or not self.selected_chart_folder:
+            return
+        filename = item.text()
+        path = os.path.join(self.selected_chart_folder, filename)
+
+        menu = QMenu(self)
+        rename_action = menu.addAction("Rename…")
+        delete_action = menu.addAction("Delete")
+        chosen = menu.exec(self.chartFilesList.mapToGlobal(pos))
+
+        if chosen == rename_action:
+            self._rename_chart_file(filename, path)
+        elif chosen == delete_action:
+            self._delete_chart_file(filename, path)
+
+    def _rename_chart_file(self, filename, path):
+        base, ext = os.path.splitext(filename)
+        new_base, ok = QInputDialog.getText(self, "Rename chart", "New name:", text=base)
+        new_base = new_base.strip()
+        if not ok or not new_base or new_base == base:
+            return
+        new_path = os.path.join(self.selected_chart_folder, new_base + ext)
+        if os.path.exists(new_path):
+            QMessageBox.warning(self, "Rename failed", f'"{new_base}{ext}" already exists.')
+            return
+        try:
+            os.rename(path, new_path)
+        except OSError as e:
+            QMessageBox.critical(self, "Rename failed", str(e))
+            return
+        self.populate_file_list(self.chartFilesList, self.selected_chart_folder)
+        self._apply_chart_validation_icons()
+
+    def _delete_chart_file(self, filename, path):
+        reply = QMessageBox.question(
+            self,
+            "Delete chart",
+            f'Delete "{filename}"? This cannot be undone.',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            os.remove(path)
+        except OSError as e:
+            QMessageBox.critical(self, "Delete failed", str(e))
+            return
+        self.populate_file_list(self.chartFilesList, self.selected_chart_folder)
+        self._apply_chart_validation_icons()
 
     def open_chart_builder(self):
         vector_layers = self.get_selected_vector_layers()
