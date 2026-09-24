@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-09-24
+
+### Added
+- **Pre-run summary.** Before Generate/Deploy actually starts, a one-screen summary shows layer/map/chart/model counts and the deploy target, so an obviously-wrong selection is caught before a multi-minute run instead of after.
+- **"Open app" / "Open output folder"** buttons on the success dialog after a local deploy (previously text-only for the app URL, and folder-opening was generate-only).
+- **"Run again"** button in History — restores a Generate or local-Deploy run's settings and runs immediately; SSH/AWS runs still restore fields only, since credentials are never stored.
+- **New pre-run warnings**, shown in both the layers table and the pre-run confirm dialog:
+  - A layer name that collides with the generator's own DSL grammar keywords (e.g. a layer named "point" or "polygon") — previously failed generation with a cryptic parser error, now caught and flagged with a rename suggestion before running.
+  - Symbology QGIS can't convert to SLD faithfully (heatmap, 2.5D, inverted polygon, null-symbol renderers fail outright; point-displacement/point-cluster silently degrade to a generic default style) — verified against real QGIS.
+  - An informational note that local raster layers always publish unstyled.
+  - A QGIS group named "Output", "Charts" or "Models" no longer collides with the plugin's own reserved staging directories.
+
+### Internal
+- 12 new unit tests (182 total).
+
 ## [0.3.1] - 2026-09-23
 
 ### Added
