@@ -133,5 +133,30 @@ class BuildDeployConfigTests(unittest.TestCase):
         self.assertEqual(mode, 0o600)
 
 
+class DeployProblemTests(unittest.TestCase):
+    def ssh(self, **overrides):
+        fields = {"host": "203.0.113.5", "port": 22, "username": "u", "cert_route": "/k", "remote_repo_path": "/home/u/app"}
+        fields.update(overrides)
+        return fields
+
+    def test_valid_ssh_and_local_have_no_problem(self):
+        self.assertIsNone(deploy_config.deploy_problem("ssh", self.ssh()))
+        self.assertIsNone(deploy_config.deploy_problem("local", {"host": "http://localhost:80"}))
+
+    def test_remote_path_rules_match_the_uploader(self):
+        for bad in ["", "/", "~", "~/app", "app", "/home", "/home/u/../..", "/a b/c", "/x/$(rm)", "/x/'y'"]:
+            self.assertIsNotNone(deploy_config.deploy_problem("ssh", self.ssh(remote_repo_path=bad)), bad)
+        for good in ["/home/u/app", "/opt/gis-app_1.0"]:
+            self.assertIsNone(deploy_config.deploy_problem("ssh", self.ssh(remote_repo_path=good)), good)
+
+    def test_host_must_not_be_a_url(self):
+        for bad in ["http://1.2.3.4", "1.2.3.4/app", "my host"]:
+            self.assertIn("not a URL", deploy_config.deploy_problem("ssh", self.ssh(host=bad)), bad)
+
+    def test_aws_checks_its_own_remote_path_key(self):
+        self.assertIsNotNone(deploy_config.deploy_problem("aws", {"remote_path": "/"}))
+        self.assertIsNone(deploy_config.deploy_problem("aws", {"remote_path": "/home/ec2-user/code"}))
+
+
 if __name__ == "__main__":
     unittest.main()

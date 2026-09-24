@@ -190,11 +190,54 @@ class ClassifyRasterTests(unittest.TestCase):
         plan = layer_export.classify_raster(_raster_descriptor("id1", "x", "layers=roads", "wms"))
         self.assertEqual(plan.kind, layer_export.RASTER_KIND_REJECTED)
 
-    def test_xyz_tile_layer_is_rejected(self):
-        source = "type=xyz&url=https://tile.example.com/{z}/{x}/{y}.png"
+    def test_xyz_tile_layer_is_published_as_tiles(self):
+        source = "type=xyz&url=https://tile.example.com/{z}/{x}/{y}.png&zmax=19&zmin=0"
         plan = layer_export.classify_raster(_raster_descriptor("id1", "Basemap", source, "wms"))
+        self.assertEqual(plan.kind, layer_export.RASTER_KIND_XYZ)
+        self.assertEqual(plan.tile_request, {
+            "url": "https://tile.example.com/{z}/{x}/{y}.png", "zmin": 0, "zmax": 19,
+        })
+        self.assertEqual(plan.message, "")
+
+    def test_xyz_url_encoded_as_qgis_writes_it_is_decoded(self):
+        source = "type=xyz&url=https://tile.example.com/%7Bz%7D/%7Bx%7D/%7By%7D.png"
+        plan = layer_export.classify_raster(_raster_descriptor("id1", "Basemap", source, "wms"))
+        self.assertEqual(plan.kind, layer_export.RASTER_KIND_XYZ)
+        self.assertEqual(plan.tile_request["url"], "https://tile.example.com/{z}/{x}/{y}.png")
+        self.assertIsNone(plan.tile_request["zmin"])
+        self.assertIsNone(plan.tile_request["zmax"])
+
+    def test_xyz_with_inverted_y_is_kept(self):
+        source = "type=xyz&url=https://tile.example.com/{z}/{x}/{-y}.png"
+        plan = layer_export.classify_raster(_raster_descriptor("id1", "TMS", source, "wms"))
+        self.assertEqual(plan.kind, layer_export.RASTER_KIND_XYZ)
+
+    def test_xyz_quadkey_is_rejected(self):
+        source = "type=xyz&url=https://ecn.t3.tiles.virtualearth.net/tiles/a{q}.jpeg"
+        plan = layer_export.classify_raster(_raster_descriptor("id1", "Bing", source, "wms"))
         self.assertEqual(plan.kind, layer_export.RASTER_KIND_REJECTED)
-        self.assertIn("XYZ", plan.message)
+        self.assertIn("quadkey", plan.message)
+
+    def test_xyz_without_placeholders_is_rejected(self):
+        source = "type=xyz&url=https://tile.example.com/static.png"
+        plan = layer_export.classify_raster(_raster_descriptor("id1", "Static", source, "wms"))
+        self.assertEqual(plan.kind, layer_export.RASTER_KIND_REJECTED)
+        self.assertIn("{z}", plan.message)
+
+    def test_xyz_without_url_is_rejected(self):
+        plan = layer_export.classify_raster(_raster_descriptor("id1", "Empty", "type=xyz", "wms"))
+        self.assertEqual(plan.kind, layer_export.RASTER_KIND_REJECTED)
+
+    def test_xyz_local_or_non_http_url_is_rejected(self):
+        source = "type=xyz&url=file:///tiles/{z}/{x}/{y}.png"
+        plan = layer_export.classify_raster(_raster_descriptor("id1", "Local", source, "wms"))
+        self.assertEqual(plan.kind, layer_export.RASTER_KIND_REJECTED)
+
+    def test_xyz_with_referer_is_kept_with_a_warning(self):
+        source = "type=xyz&url=https://tile.example.com/{z}/{x}/{y}.png&referer=https://example.com"
+        plan = layer_export.classify_raster(_raster_descriptor("id1", "Ref", source, "wms"))
+        self.assertEqual(plan.kind, layer_export.RASTER_KIND_XYZ)
+        self.assertIn("Referer", plan.message)
 
     def test_arcgis_provider_is_rejected(self):
         plan = layer_export.classify_raster(
@@ -211,6 +254,33 @@ class ClassifyRasterTests(unittest.TestCase):
         source = "layers=roads&url=https%3A%2F%2Fexample.com%2Fwms%3Fservice%3DWMS"
         plan = layer_export.classify_raster(_raster_descriptor("id1", "x", source, "wms"))
         self.assertEqual(plan.wms_request["url"], "https://example.com/wms?service=WMS")
+
+
+class RasterHelpersTests(unittest.TestCase):
+    def test_sld_is_supported_for_the_renderers_geoserver_can_apply(self):
+        for renderer in ("singlebandgray", "singlebandpseudocolor", "paletted", "multibandcolor"):
+            self.assertTrue(layer_export.raster_sld_supported(renderer), renderer)
+
+    def test_sld_is_not_supported_for_other_renderers(self):
+        for renderer in ("hillshade", "contour", "", None, "someplugin"):
+            self.assertFalse(layer_export.raster_sld_supported(renderer), renderer)
+
+    def test_epsg_crs_needs_no_reprojection(self):
+        self.assertFalse(layer_export.raster_needs_reprojection("EPSG:25829"))
+        self.assertFalse(layer_export.raster_needs_reprojection("epsg:4326"))
+
+    def test_other_or_missing_crs_needs_reprojection(self):
+        for crs in ("", None, "USER:100000", "IGNF:LAMB93", "ESRI:54009"):
+            self.assertTrue(layer_export.raster_needs_reprojection(crs), crs)
+
+    def test_tile_sidecar_keeps_only_the_zooms_that_are_set(self):
+        body = layer_export.build_tile_sidecar({"url": "https://t/{z}/{x}/{y}.png", "zmin": None, "zmax": 17}, "© OSM")
+        self.assertEqual(body, {"url": "https://t/{z}/{x}/{y}.png", "attribution": "© OSM", "zmax": 17})
+
+    def test_tile_sidecar_without_attribution(self):
+        body = layer_export.build_tile_sidecar({"url": "https://t/{z}/{x}/{y}.png", "zmin": 0, "zmax": 0})
+        self.assertEqual(body["attribution"], "")
+        self.assertEqual((body["zmin"], body["zmax"]), (0, 0))
 
 
 if __name__ == "__main__":

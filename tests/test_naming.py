@@ -232,6 +232,11 @@ class NamingTests(unittest.TestCase):
         self.assertTrue(naming.collides_with_dsl_keyword("entity"))
         self.assertTrue(naming.collides_with_dsl_keyword("map"))
 
+    def test_collides_with_dsl_keyword_raster(self):
+        # RASTER became a keyword with CREATE RASTER LAYER (gp-gis-dsl 0.5.0)
+        self.assertTrue(naming.collides_with_dsl_keyword("raster"))
+        self.assertTrue(naming.collides_with_dsl_keyword("Raster"))
+
     def test_collides_with_dsl_keyword_false_for_ordinary_name(self):
         self.assertFalse(naming.collides_with_dsl_keyword("municipios"))
         self.assertFalse(naming.collides_with_dsl_keyword("unemployment_by_district"))

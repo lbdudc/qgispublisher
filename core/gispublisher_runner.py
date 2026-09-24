@@ -1,10 +1,9 @@
-import dataclasses, json, os, re, tempfile, pathlib, shutil, time
-from qgis.PyQt.QtCore import QProcess, QUrl
-from qgis.PyQt.QtWidgets import QApplication, QMessageBox
-from qgis.PyQt.QtGui import QDesktopServices
+import dataclasses, json, os, re, subprocess, sys, tempfile, pathlib, shutil, time
+from qgis.PyQt.QtCore import QObject, QProcess, pyqtSignal
+from qgis.PyQt.QtWidgets import QApplication
 from qgis.core import QgsMapLayer, QgsProject
 from ..core.dependencies_checker import check_node_gispublisher
-from ..core import layer_export, model_discovery, naming, project_manifest, shapefile_io
+from ..core import deploy_progress, layer_export, model_discovery, naming, project_manifest, shapefile_io
 
 # Staging dirs created under the OS temp dir per run; never cleaned up automatically
 # by the OS, so the plugin sweeps stale ones on its own (see cleanup_old_temp_dirs).
@@ -75,9 +74,29 @@ def _export_sld(layer, dest_path):
     return False, message or "style export failed"
 
 
-class GISPublisherRunner:
+class GISPublisherRunner(QObject):
+    """Stages the selected layers/charts/models, then runs the gispublisher CLI.
 
-    def __init__(self, layers, output_dir, progress_label, progress_bar, output_text, parent=None, finished_callback=None, chart_folder=None, chart_items=None, model_entries=None, debug=False, target_crs=layer_export.DEFAULT_TARGET_CRS, processing_crs=None, use_project_crs=False):
+    Knows nothing about widgets: everything a UI needs is emitted as a signal, so
+    the run can outlive any dialog (see core.publish_job.PublishJobManager).
+
+    statusChanged(str)   short human text of what is happening ("Exporting roads...")
+    logLine(str)         one line of output/diagnostics for a log view
+    progressEvent(dict)  a progress event: the CLI's `@@gp` events, plus this class's
+                         own `export`/`stage` steps (same shape, see core.deploy_progress)
+    finishedRun(int,bool) exit code and whether the run was cancelled
+    """
+
+    statusChanged = pyqtSignal(str)
+    logLine = pyqtSignal(str)
+    progressEvent = pyqtSignal(dict)
+    finishedRun = pyqtSignal(int, bool)
+
+    # Steps this class reports itself, before the CLI's own
+    LOCAL_STEPS = (("export", "Export layers"), ("stage", "Stage charts & models"))
+
+    def __init__(self, layers, output_dir, parent=None, chart_folder=None, chart_items=None, model_entries=None, debug=False, target_crs=layer_export.DEFAULT_TARGET_CRS, processing_crs=None, use_project_crs=False):
+        super().__init__(parent)
         self.layers = layers
         self.output_dir = output_dir
         self.target_crs = target_crs
@@ -85,11 +104,6 @@ class GISPublisherRunner:
         self.processing_crs = processing_crs
         # Ask gispublisher to build the web map in the QGIS project's CRS.
         self.use_project_crs = use_project_crs
-        self.progress_label = progress_label
-        self.progress_bar = progress_bar
-        self.output_text = output_text
-        self.parent = parent
-        self.finished_callback = finished_callback
         self.chart_folder = chart_folder
         # None means "include everything in the folder"; a list restricts to those names.
         self.chart_items = chart_items
@@ -112,6 +126,9 @@ class GISPublisherRunner:
         self.log_lines = []
         self._start_time = None
         self.resulting_host = ""
+        self.exit_code = -1
+        self._out_buffer = deploy_progress.LineBuffer()
+        self._err_buffer = deploy_progress.LineBuffer()
 
     def _dest_dir_for(self, layer, tree_info, group_dir_by_name):
         """Where `layer`'s staged file(s) belong: a group subdirectory (created
@@ -164,6 +181,7 @@ class GISPublisherRunner:
         vector_layers = []
         vector_descriptor_by_id = {}
         local_raster_layers = []
+        xyz_layers = []
         raster_descriptor_by_id = {}
         wms_requests = []
 
@@ -174,6 +192,12 @@ class GISPublisherRunner:
                 if plan.kind == layer_export.RASTER_KIND_LOCAL:
                     local_raster_layers.append(layer)
                     raster_descriptor_by_id[layer.id()] = descriptor
+                elif plan.kind == layer_export.RASTER_KIND_XYZ:
+                    # Staged below, once it has a basename in the shared namespace
+                    xyz_layers.append((layer, plan))
+                    raster_descriptor_by_id[layer.id()] = descriptor
+                    if plan.message:
+                        self.log_lines.append(f"[WARN] {layer.name()}: {plan.message}")
                 elif plan.kind == layer_export.RASTER_KIND_WMS:
                     wms_requests.append(plan.wms_request)
                     if plan.message:
@@ -193,13 +217,18 @@ class GISPublisherRunner:
         # vector that would otherwise collide (e.g. "roads.tif" next to "roads.shp")
         # never overwrite each other in the flat temp dir — see
         # naming.assign_staged_basenames.
+        xyz_ids = {layer.id() for layer, _plan in xyz_layers}
         basename_candidates = []
         for layer in self.layers:
             descriptor = vector_descriptor_by_id.get(layer.id()) or raster_descriptor_by_id.get(layer.id())
             if descriptor is not None:
-                basename_candidates.append(
-                    (descriptor.layer_id, naming.preferred_basename_from_source(descriptor.name, descriptor.source))
+                # A tile layer's "source" is a URL template, no use as a file name
+                preferred = (
+                    descriptor.name
+                    if layer.id() in xyz_ids
+                    else naming.preferred_basename_from_source(descriptor.name, descriptor.source)
                 )
+                basename_candidates.append((descriptor.layer_id, preferred))
         basename_by_id = naming.assign_staged_basenames(basename_candidates)
 
         # Every vector layer is exported through QgsVectorFileWriter (not just the
@@ -220,7 +249,7 @@ class GISPublisherRunner:
             # progress dialog and show which layer is being processed instead of
             # leaving the UI thread (and the dialog) looking frozen for the
             # whole staging step.
-            self.progress_label.setText(f"Exporting {layer.name()}...")
+            self.statusChanged.emit(f"Exporting {layer.name()}...")
             QApplication.processEvents()
 
             plan = plan_by_id[layer.id()]
@@ -260,16 +289,49 @@ class GISPublisherRunner:
         for layer in local_raster_layers:
             if self.cancelled:
                 return
-            self.progress_label.setText(f"Exporting {layer.name()}...")
+            self.statusChanged.emit(f"Exporting {layer.name()}...")
             QApplication.processEvents()
 
             staged_basename = basename_by_id[layer.id()]
             dest_dir = self._dest_dir_for(layer, tree_info, group_dir_by_name)
-            ok, message = layer_export.export_raster(layer, staged_basename, dest_dir)
+            descriptor = raster_descriptor_by_id[layer.id()]
+            reproject = layer_export.raster_needs_reprojection(descriptor.crs_authid)
+            if reproject:
+                self.log_lines.append(
+                    f"[INFO] {layer.name()}: CRS {descriptor.crs_authid or 'unknown'} isn't an EPSG code "
+                    "GeoServer knows; reprojecting the raster to EPSG:4326."
+                )
+            ok, message = layer_export.export_raster(layer, staged_basename, dest_dir, reproject=reproject)
             self.export_results.append((layer.name(), ok, message))
             if ok:
                 self.manifest_layer_entries.append(project_manifest.build_layer_entry(
-                    raster_descriptor_by_id[layer.id()], staged_basename, tree_info.get(layer.id())
+                    descriptor, staged_basename, tree_info.get(layer.id())
+                ))
+                # The raster's QGIS style, as an SLD next to it, when its renderer is one
+                # GeoServer can apply; otherwise (or if the export fails) GeoServer's own
+                # default raster style is used.
+                if layer_export.raster_sld_supported(descriptor.renderer_type):
+                    dest_sld = os.path.join(dest_dir, staged_basename + ".sld")
+                    sld_ok, sld_message = _export_sld(layer, dest_sld)
+                    self.sld_results.append((layer.name(), sld_ok, sld_message))
+
+        for layer, plan in xyz_layers:
+            if self.cancelled:
+                return
+            staged_basename = basename_by_id[layer.id()]
+            dest_dir = self._dest_dir_for(layer, tree_info, group_dir_by_name)
+            descriptor = raster_descriptor_by_id[layer.id()]
+            sidecar = layer_export.build_tile_sidecar(plan.tile_request, descriptor.attribution)
+            try:
+                with open(os.path.join(dest_dir, staged_basename + ".tiles.json"), "w", encoding="utf-8") as f:
+                    json.dump(sidecar, f)
+                ok, message = True, ""
+            except OSError as e:
+                ok, message = False, str(e)
+            self.export_results.append((layer.name(), ok, message))
+            if ok:
+                self.manifest_layer_entries.append(project_manifest.build_layer_entry(
+                    descriptor, staged_basename, tree_info.get(layer.id())
                 ))
 
         if wms_requests:
@@ -293,7 +355,7 @@ class GISPublisherRunner:
 
     def copy_chart_folder(self):
         if self.chart_folder and os.path.exists(self.chart_folder):
-            self.progress_label.setText("Staging chart files...")
+            self.statusChanged.emit("Staging chart files...")
             for item in os.listdir(self.chart_folder):
                 if self.cancelled:
                     return
@@ -312,7 +374,7 @@ class GISPublisherRunner:
 
     def copy_model_folder(self):
         if self.model_entries:
-            self.progress_label.setText("Staging models...")
+            self.statusChanged.emit("Staging models...")
         for entry in self.model_entries:
             if self.cancelled:
                 return
@@ -350,27 +412,46 @@ class GISPublisherRunner:
         except Exception as e:
             self.log_lines.append(f"[WARN] Could not write QGIS project manifest: {e}")
 
+    def _emit_step(self, step_id, status, detail=""):
+        self.progressEvent.emit({"event": "step", "id": step_id, "status": status, "detail": detail})
+
+    def _add_log(self, line):
+        self.log_lines.append(line)
+        self.logLine.emit(line)
+
     def start(self, generate=False, config_path=None, gispub_path=None):
         """`gispub_path`, if given, skips check_node_gispublisher()'s own
         find_node()/find_gispublisher() lookup (which can itself spawn a
         blocking npm subprocess) — callers that already resolved it via a
         requirements check (e.g. qgispublisher_dialog's self._gispub_path)
         should always pass it. It's only re-resolved here as a fallback for
-        callers that haven't (e.g. tests driving the runner directly)."""
+        callers that haven't (e.g. tests driving the runner directly).
+
+        Staging runs here, synchronously, on the caller's (GUI) thread — QGIS
+        layers can only be read there — repainting between layers. The CLI itself
+        is a QProcess and runs in the background."""
         if not generate and not config_path:
             raise ValueError("start() requires either generate=True or a config_path")
 
         gispub_path = gispub_path or check_node_gispublisher()
+        if not gispub_path:
+            # QProcess with no program crashes the whole QGIS process natively
+            raise RuntimeError("The GISPublisher command was not found. Install it from the plugin's status bar.")
 
         self.generate = generate
         self._start_time = time.time()
-        self._begin_progress_ui()
+        self.statusChanged.emit("Preparing layers...")
+        QApplication.processEvents()
 
+        self._emit_step("export", "running")
         self.copy_layers_directly()
         if self.cancelled:
             self._report_cancelled()
             return
         self._write_project_manifest()
+        self._emit_step("export", "done")
+
+        self._emit_step("stage", "running")
         self.copy_chart_folder()
         if self.cancelled:
             self._report_cancelled()
@@ -379,6 +460,7 @@ class GISPublisherRunner:
         if self.cancelled:
             self._report_cancelled()
             return
+        self._emit_step("stage", "done")
 
         args = []
         if generate:
@@ -407,42 +489,19 @@ class GISPublisherRunner:
             args.append("--config")
             args.append(config_path.name)
             working_dir = str(config_path.parent)
+        # Structured progress; a CLI that predates the flag ignores it and the UI
+        # falls back to the plain log (see DeployProgress.cli_reported).
+        args.extend(["--progress", "json"])
         self.run_gispublisher(gispub_path, args, working_dir)
 
-    def _begin_progress_ui(self):
-        """Show the progress dialog's busy indicator and log immediately, before
-        the (I/O-heavy) layer staging below even starts — previously this only
-        happened in run_gispublisher(), at the very end of staging, so the
-        dialog sat there blank/unresponsive for the entire staging step."""
-        self.progress_label.setText("Preparing layers...")
-        self.progress_label.setVisible(True)
-        self.progress_bar.setVisible(True)
-        # Real progress isn't reported by the GISPublisher CLI, so show a busy
-        # (indeterminate) bar instead of a fake, misleading percentage.
-        self.progress_bar.setRange(0, 0)
-        if self.output_text:
-            self.output_text.clear()
-            self.output_text.appendPlainText("> Staging layers...\n")
-        QApplication.processEvents()
-
     def _report_cancelled(self):
-        """Mirrors finished()'s cancelled branch — used when Cancel is clicked
-        during staging, before the gispublisher QProcess (whose own `finished`
-        signal normally drives this) even exists."""
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        self.progress_label.setText("GISPublisher cancelled")
-        if self.output_text:
-            self.output_text.appendPlainText("\n> Process cancelled by user.")
+        """Used when Cancel is clicked during staging, before the gispublisher
+        QProcess (whose own `finished` signal normally drives this) even exists."""
         self.exit_code = -1
-        if self.finished_callback:
-            self.finished_callback()
+        self.finishedRun.emit(-1, True)
 
     def run_gispublisher(self, gispub_path, args, working_dir=None):
-        self.progress_label.setText("Running GISPublisher...")
-
-        if self.output_text:
-            self.output_text.appendPlainText("> Starting GISPublisher...\n")
+        self.statusChanged.emit("Running GISPublisher...")
 
         for layer_name, ok, message in self.export_results:
             if not ok:
@@ -453,11 +512,11 @@ class GISPublisherRunner:
             else:
                 suffix = f" ({message})" if message else ""
                 self.log_lines.append(f"[STYLE] {layer_name}: style not exported{suffix}")
-        if self.output_text:
-            for line in self.log_lines:
-                self.output_text.appendPlainText(line)
+        # Everything collected while staging, shown before the CLI's own output
+        for line in self.log_lines:
+            self.logLine.emit(line)
 
-        self.process = QProcess()
+        self.process = QProcess(self)
         self.process.setProgram(gispub_path)
         self.process.setArguments(args)
 
@@ -467,13 +526,24 @@ class GISPublisherRunner:
         self.process.readyReadStandardOutput.connect(self.handle_stdout)
         self.process.readyReadStandardError.connect(self.handle_stderr)
         self.process.finished.connect(self.finished)
+        self.process.errorOccurred.connect(self._on_process_error)
 
         self.process.start()
 
+    def _on_process_error(self, error):
+        # FailedToStart never reaches `finished`: without this a missing/broken
+        # CLI would leave the run hanging forever.
+        if error == QProcess.ProcessError.FailedToStart:
+            self._add_log(f"[ERROR] Could not start GISPublisher: {self.process.errorString()}")
+            self.exit_code = -1
+            self.finishedRun.emit(-1, False)
+
     def cancel(self):
-        """Kill the running GISPublisher process, if any."""
+        """Stop the run: mark it cancelled (staging loops check the flag) and kill
+        the CLI together with what it spawned (docker compose, ssh...)."""
+        self.cancelled = True
         if self.process and self.process.state() != QProcess.ProcessState.NotRunning:
-            self.cancelled = True
+            _kill_process_tree(self.process.processId())
             self.process.kill()
 
     def _record_output(self, text):
@@ -484,92 +554,56 @@ class GISPublisherRunner:
                 if match:
                     self.resulting_host = match.group(0).rstrip(".,;")
 
+    def _handle_event(self, event):
+        """A parsed `@@gp` event: forwarded as-is, plus a readable log line."""
+        kind = event.get("event")
+        if kind == "result" and event.get("url"):
+            self.resulting_host = event["url"]
+        if kind == "log":
+            line = event.get("line", "")
+            self.log_lines.append(line)
+            self.logLine.emit(line)
+            return
+        if kind == "step":
+            label = event.get("label") or event.get("id")
+            status = event.get("status")
+            if status == "running":
+                self._add_log(f"> {label}...")
+            elif status == "failed":
+                self._add_log(f"[ERROR] {label} failed: {event.get('detail', '')}".rstrip())
+            elif status == "skipped":
+                self._add_log(f"> {label}: skipped {event.get('detail', '')}".rstrip())
+        self.progressEvent.emit(event)
+
+    def _handle_lines(self, lines, stderr=False):
+        for line in lines:
+            event = deploy_progress.parse_line(line)
+            if event is not None:
+                self._handle_event(event)
+                continue
+            if not line.strip():
+                continue
+            text = f"[ERROR] {line}" if stderr else line
+            self._record_output(text)
+            self.logLine.emit(text)
+
     def handle_stdout(self):
         # errors="replace": a non-UTF-8 byte from the CLI (e.g. a Windows console's
         # native codepage) must not raise inside this Qt slot and kill the run.
         text = bytes(self.process.readAllStandardOutput()).decode("utf-8", errors="replace")
-        if text.strip():
-            self._record_output(text)
-            if self.output_text:
-                self.output_text.appendPlainText(text.rstrip())
+        self._handle_lines(self._out_buffer.feed(text))
 
     def handle_stderr(self):
         text = bytes(self.process.readAllStandardError()).decode("utf-8", errors="replace")
-        if text.strip():
-            self._record_output(f"[ERROR] {text}")
-            if self.output_text:
-                self.output_text.appendPlainText(f"[ERROR] {text.rstrip()}")
-
-    def show_error_popup(self, message=None):
-        detail = message or "\n".join(self.log_lines[-15:]) or "Execution failed"
-
-        if self.debug:
-            self.progress_label.setText("GISPublisher finished with errors ❌")
-            self.output_text.appendPlainText(f"\n> ERROR: {detail}")
-            return
-
-        msg_box = QMessageBox(self.parent)
-        msg_box.setIcon(QMessageBox.Icon.Critical)
-        msg_box.setWindowTitle("GISPublisher Error")
-        msg_box.setText("An error occurred during GISPublisher execution.")
-        msg_box.setInformativeText(detail)
-        msg_box.setDetailedText("\n".join(self.log_lines))
-        msg_box.exec()
+        self._handle_lines(self._err_buffer.feed(text), stderr=True)
 
     def failed_export_layers(self):
         """Layers whose export_results entry recorded a failure — dropped rasters,
-        rejected providers, and export errors alike. Checked by finished()/
-        show_success_popup() so a run where some layers didn't make it in is never
-        reported as a bare, unqualified success.
+        rejected providers, and export errors alike. Checked when the run ends so
+        a run where some layers didn't make it in is never reported as a bare,
+        unqualified success.
         """
         return [(name, message) for name, ok, message in self.export_results if not ok]
-
-    def show_success_popup(self):
-        failed = self.failed_export_layers()
-
-        if self.debug:
-            label = "GISPublisher finished ✅" if not failed else f"GISPublisher finished with {len(failed)} warning(s) ⚠️"
-            self.progress_label.setText(label)
-            self.output_text.appendPlainText("\n> Process completed successfully.")
-            return
-
-        msg_box = QMessageBox(self.parent)
-        msg_box.setIcon(QMessageBox.Icon.Information if not failed else QMessageBox.Icon.Warning)
-        msg_box.setWindowTitle("Process completed")
-
-        # Both branches can offer "Open folder"; only deploy (when a host
-        # URL was actually seen in the CLI's own output — see
-        # _record_output) can also offer "Open app". Mirrors
-        # HistoryDialog.on_open()'s same host-or-folder fallback for a past
-        # run, so a fresh run and a restored one behave identically.
-        open_app_button = None
-        if self.generate:
-            text = "The application was generated successfully."
-        else:
-            text = "Deployment completed successfully."
-            if self.resulting_host:
-                text += f"\n\nThe application is available at:\n{self.resulting_host}"
-                open_app_button = msg_box.addButton("Open app", QMessageBox.ButtonRole.ActionRole)
-        open_folder_button = (
-            msg_box.addButton("Open folder", QMessageBox.ButtonRole.ActionRole)
-            if self.output_dir and os.path.isdir(self.output_dir)
-            else None
-        )
-
-        if failed:
-            text += f"\n\n{len(failed)} layer(s) were not published:\n" + "\n".join(
-                f"- {name}: {message}" for name, message in failed
-            )
-        msg_box.setText(text)
-
-        msg_box.addButton(QMessageBox.StandardButton.Ok)
-        msg_box.exec()
-
-        clicked = msg_box.clickedButton()
-        if open_app_button and clicked == open_app_button:
-            QDesktopServices.openUrl(QUrl(self.resulting_host))
-        elif open_folder_button and clicked == open_folder_button:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(self.output_dir))
 
     def duration_seconds(self):
         if self._start_time is None:
@@ -577,31 +611,28 @@ class GISPublisherRunner:
         return time.time() - self._start_time
 
     def finished(self, exitCode, exitStatus):
-        self.progress_bar.setRange(0, 100)
-
-        if self.cancelled:
-            self.progress_bar.setValue(0)
-            self.progress_label.setText("GISPublisher cancelled")
-            if self.output_text:
-                self.output_text.appendPlainText("\n> Process cancelled by user.")
-        elif exitCode == 0:
-            failed = self.failed_export_layers()
-            self.progress_bar.setValue(100)
-            self.progress_bar.setStyleSheet("")
-            if failed:
-                self.progress_label.setText(f"GISPublisher finished with {len(failed)} warning(s) ⚠️")
-            else:
-                self.progress_label.setText("GISPublisher finished ✅")
-            if self.output_text:
-                self.output_text.appendPlainText("\n> Process completed successfully.")
-            self.show_success_popup()
-        else:
-            self.progress_label.setText("GISPublisher failed ❌")
-            if self.output_text:
-                self.output_text.appendPlainText(f"\n> Process finished with errors (exit code {exitCode}).")
-            self.show_error_popup()
-
+        # Output the process wrote without a trailing newline
+        self._handle_lines(self._out_buffer.flush())
+        self._handle_lines(self._err_buffer.flush(), stderr=True)
         self.exit_code = exitCode
+        self.finishedRun.emit(exitCode, self.cancelled)
 
-        if self.finished_callback:
-            self.finished_callback()
+
+def _kill_process_tree(pid):
+    """Best effort: terminate `pid`'s children (docker compose, ssh, scp...), which
+    QProcess.kill() alone would leave running. The process itself is killed by the
+    caller."""
+    if not pid:
+        return
+    try:
+        if sys.platform == "win32":
+            subprocess.run(  # nosec B603 B607 - fixed system tool, pid is an int
+                ["taskkill", "/PID", str(int(pid)), "/T", "/F"],
+                capture_output=True, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        else:
+            subprocess.run(  # nosec B603 B607 - fixed system tool, pid is an int
+                ["pkill", "-KILL", "-P", str(int(pid))], capture_output=True, timeout=15,
+            )
+    except (OSError, subprocess.SubprocessError):
+        pass

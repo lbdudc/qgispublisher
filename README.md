@@ -58,7 +58,9 @@ Alternatively, extract the zip contents into your QGIS plugins directory:
    - On the right, the **Action** panel: choose **Generate** or **Deploy**. Generate shows an output folder picker; Deploy shows the Local/SSH/AWS configuration described in [Deploying your application](#deploying-your-application), plus a **History** section — see [Deployment history](#deployment-history).
    - Drag the divider between the two panes to resize them.
 3. Click **Run** at the bottom of the window to start the selected action. Your layer/chart/model selections and output folder are remembered per-project — see [Saved selections](#saved-selections).
-4. A progress window opens showing the operation's status; you can cancel it while it's running. Tick **Show log** to see the underlying GISPublisher output (the setting is remembered for next time). A message box confirms success, or shows the error (with a **Show Details…** button for the full log), when it finishes.
+4. A progress window opens listing the run as steps (export layers, generate the app, check Docker, build & start services, wait for services…), each with its status and duration, and the state of every service while the app starts. Tick **Show details** for the underlying GISPublisher/Docker output (remembered for next time).
+   - **Run in background** hides the window and the run continues: it appears in the QGIS task manager (bottom status bar, where it can also be cancelled), and a message-bar notification tells you when it ends, with **Open app** / **Details** buttons. Click **Show progress…** on the main window to bring the window back. One run at a time.
+   - When it finishes, the window shows the result: the app's URL (**Open app**, **Copy link**) or a plain-language reason for the failure (Docker not running, port already in use, SSH authentication failed…) with a hint, plus the full log.
 
 ## Data Visualizations with Vega
 
@@ -133,7 +135,9 @@ Provisions and deploys to a new AWS EC2 instance.
 | SSH username / SSH key path | Credentials used to connect to the instance after it boots |
 | Remote repository path | Absolute path on the instance to deploy into |
 
-All fields are required for the selected deployment type; the plugin validates them before running and lists anything missing.
+All fields are required for the selected deployment type; the plugin validates them before running and lists anything missing. The remote path must be an absolute folder at least two levels deep (for example `/home/ubuntu/app`): **it is emptied on every deploy**.
+
+Each app is generated into its own folder, `<QGIS profile>/GISPublisher/deployments/<app name>/output`, so History can open it and redeploying an app replaces its previous deployment. Docker is installed on an SSH/AWS server the first time (this needs a user with passwordless `sudo`); afterwards that step is skipped. A deploy is finished when every service is healthy, not just started.
 
 ## Deployment history
 
@@ -176,10 +180,10 @@ Local deployment runs the generated app in Docker — make sure Docker Desktop i
 Only vector and raster layers currently loaded in the QGIS project are listed. WMS raster layers are supported but exported as a `urls.wms` reference file rather than copied locally.
 
 **Cancelling generation/deployment.**
-While a Generate or Deploy operation is running, click **Cancel** in the progress window to stop it. Partial output in the destination folder is not automatically cleaned up. Temporary staging folders under your system temp directory are swept automatically after a day; nothing to clean up by hand.
+While a Generate or Deploy operation is running, click **Cancel** in the progress window (or cancel its entry in the QGIS task manager) to stop it. This stops GISPublisher and the commands it started, but a Docker image build that the Docker engine already began may finish in the background; the next deploy of the same app cleans up. Partial output in the destination folder is not automatically cleaned up. Temporary staging folders under your system temp directory are swept automatically after a day; nothing to clean up by hand.
 
 **A published map doesn't use my QGIS styling.**
-Only styling on layers copied as shapefiles is exported (as an `.sld` file alongside them) — GeoPackage, PostGIS and other non-shapefile vector sources still fall back to a generated random-colour style, since layer export itself remains shapefile-only. Check the log (**Show log** in the progress window) for a `[STYLE]` line per layer confirming whether its style was exported.
+Only styling on layers copied as shapefiles is exported (as an `.sld` file alongside them) — GeoPackage, PostGIS and other non-shapefile vector sources still fall back to a generated random-colour style, since layer export itself remains shapefile-only. Check the log (**Show details** in the progress window) for a `[STYLE]` line per layer confirming whether its style was exported.
 
 **A model I saved doesn't show up on the Models tab.**
 Click the refresh button next to "Models to include" to force a rescan of QGIS's Processing registry.

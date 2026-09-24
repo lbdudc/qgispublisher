@@ -86,7 +86,7 @@ RESERVED_DSL_WORDS = frozenset(
         "StrokeWidth", "Wms", "Style", "Is_Base_Layer", "Hidden", "Sortable",
         "Map", "Set", "Deployment", "UrlWms", "LayerName", "Format", "Crs",
         "BboxCrs", "MinX", "MinY", "MaxX", "MaxY", "Queryable",
-        "Attribution", "Version",
+        "Attribution", "Version", "Raster",
     )
 )
 

@@ -21,9 +21,8 @@ from qgis.PyQt.QtWidgets import (
     QStyle,
     QTableWidgetItem,
 )
-from qgis.core import Qgis, QgsCoordinateReferenceSystem, QgsMessageLog, QgsProject, QgsMapLayer, QgsSettings, QgsWkbTypes
+from qgis.core import Qgis, QgsApplication, QgsCoordinateReferenceSystem, QgsMessageLog, QgsProject, QgsMapLayer, QgsSettings, QgsWkbTypes
 
-from .progress_dialog import ProgressDialog
 from .chart_builder_dialog import ChartBuilderDialog
 from .history_dialog import HistoryDialog
 from ..core.dependencies_checker import (
@@ -34,8 +33,9 @@ from ..core.dependencies_checker import (
     should_check_for_update,
     REQUIRED_CLI_VERSION,
 )
-from ..core.deploy_config import build_deploy_config
+from ..core.deploy_config import build_deploy_config, deploy_problem
 from ..core.gispublisher_runner import GISPublisherRunner, cleanup_old_temp_dirs
+from ..core.publish_job import PublishJobManager
 from ..core import model_discovery, state_store, chart_builder, connection_test, layer_export, naming, project_manifest
 
 FORM_CLASS, _ = uic.loadUiType(
@@ -196,9 +196,16 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
 
     DEBUG = False
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, job_manager=None):
         super().__init__(parent)
         self.setupUi(self)
+
+        # Owns the running Generate/Deploy, so it outlives this dialog. The plugin
+        # passes its own; a standalone dialog gets a private one.
+        self.job_manager = job_manager or PublishJobManager(parent=self)
+        self._run_button_label = self.runButton.text()
+        self.job_manager.jobStarted.connect(self._update_run_button)
+        self.job_manager.jobFinished.connect(self._update_run_button)
 
         self.selected_chart_folder = None
         self.selected_model_folder = None
@@ -523,6 +530,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         kind_label = {
             layer_export.RASTER_KIND_LOCAL: "Raster (local)",
             layer_export.RASTER_KIND_WMS: "Raster (WMS)",
+            layer_export.RASTER_KIND_XYZ: "Tiles (XYZ)",
             layer_export.RASTER_KIND_REJECTED: "Raster (unsupported)",
         }.get(plan.kind, "Raster")
 
@@ -533,16 +541,28 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         if plan.message:
             tooltip_parts.append(plan.message)
         if plan.kind == layer_export.RASTER_KIND_LOCAL:
-            # Informational, not a warning icon: this is normal, expected
-            # behavior for every local raster today, not something to fix —
-            # export_raster() byte-copies/re-encodes as GeoTIFF, never
-            # reading band rendering/color ramps/contrast enhancement, so
-            # the published raster always looks different from how it's
-            # styled in QGIS. Surfacing it here just makes that an informed
-            # choice instead of a silent one.
+            # Informational, not a warning icon: how the raster will look is
+            # worth knowing up front, but it isn't something to fix.
+            if layer_export.raster_sld_supported(descriptor.renderer_type):
+                tooltip_parts.append(
+                    "Note: the raster's QGIS style (color ramp / band rendering) is "
+                    "published as an SLD."
+                )
+            else:
+                tooltip_parts.append(
+                    f'Note: the "{descriptor.renderer_type or "unknown"}" renderer can\'t '
+                    "be exported as a style — this will publish with GeoServer's default "
+                    "raster style."
+                )
+            if layer_export.raster_needs_reprojection(descriptor.crs_authid):
+                tooltip_parts.append(
+                    f"CRS {descriptor.crs_authid or 'unknown'} is not an EPSG code: the "
+                    "raster will be reprojected to EPSG:4326."
+                )
+        elif plan.kind == layer_export.RASTER_KIND_XYZ:
             tooltip_parts.append(
-                "Note: raster styling (band rendering, color ramps, contrast) is not "
-                "preserved — this will publish unstyled."
+                "Published as a tile overlay in the generated app, loaded straight "
+                "from the tile service."
             )
         return (
             layer.name(), kind_label, "—", "—", group_text,
@@ -1644,6 +1664,10 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
     # ------------------------------------------------------------------
 
     def on_run_clicked(self):
+        if self.job_manager.is_running():
+            self.job_manager.show_progress()
+            return
+
         selected_layers = self.get_selected_layers()
         if not selected_layers:
             QMessageBox.warning(self, "No layers selected", "Select at least one layer to continue.")
@@ -1797,6 +1821,71 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
                 "GISPublisher", level=Qgis.Warning,
             )
 
+    # ------------------------------------------------------------------
+    # Generate / Deploy. Both are handed to the PublishJobManager, which owns
+    # the run: it keeps going (and is listed in the QGIS task manager) when this
+    # dialog or the progress window is closed.
+    # ------------------------------------------------------------------
+
+    _TARGET_LABELS = {"local": "Local Docker", "ssh": "SSH server", "aws": "AWS"}
+
+    def _deployment_dir(self, app_name):
+        """A persistent folder per app (in the QGIS profile) instead of a shared
+        temp one: the generated app lives here, so History can open it and a
+        redeploy of the same app replaces its own previous deployment."""
+        path = os.path.join(QgsApplication.qgisSettingsDirPath(), "GISPublisher", "deployments", app_name)
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    def _create_runner(self, selected_layers, output_dir):
+        return GISPublisherRunner(
+            layers=selected_layers,
+            output_dir=output_dir,
+            chart_folder=self.selected_chart_folder,
+            chart_items=self.get_selected_chart_items(),
+            model_entries=self.get_selected_model_entries(),
+            processing_crs=self.processing_crs_override() or None,
+            use_project_crs=self.useProjectCrsCheck.isChecked(),
+            parent=self.job_manager,
+            debug=self.DEBUG,
+        )
+
+    def _start_job(self, runner, kind, title, target, start_kwargs, config_path, record):
+        """Hand `runner` to the job manager. `record` holds what History stores
+        about the run (see state_store.append_run_record)."""
+
+        def on_finished(job):
+            self._remove_config_file(config_path)
+            # Where the app answers when the CLI said so, else what the form had
+            host = (job.url or record.get("host", "")) if kind == "deploy" else ""
+            state_store.append_run_record(
+                exit_code=job.exit_code if job.exit_code is not None else -1,
+                duration_seconds=job.duration,
+                log_lines=job.log_lines,
+                host=host,
+                **{k: v for k, v in record.items() if k != "host"},
+            )
+
+        try:
+            self.job_manager.start_job(runner, kind, title, target, start_kwargs, on_finished=on_finished)
+        except Exception as e:
+            self._remove_config_file(config_path)
+            self.job_manager.show_progress()
+            QMessageBox.critical(self, "Error", str(e))
+
+    def _run_counts(self, selected_layers):
+        return {
+            "project_title": QgsProject.instance().title() or QgsProject.instance().baseName(),
+            "layer_count": len(selected_layers),
+            "chart_count": len(self.get_selected_chart_items() or []),
+            "model_count": len(self.get_selected_model_entries()),
+        }
+
+    def _update_run_button(self):
+        """While a run is in progress the button brings its window back instead of
+        starting a second run."""
+        self.runButton.setText("Show progress\u2026" if self.job_manager.is_running() else self._run_button_label)
+
     def run_generate(self, selected_layers):
         if not self.output_dir:
             QMessageBox.warning(self, "Output folder required", "Select an output folder before generating.")
@@ -1808,9 +1897,9 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         version = self.appVersionEdit.text().strip() or "1.0.0"
         try:
             # Written into output_dir itself, not the system temp dir: its own
-            # --config resolution is cwd-relative with no absolute-path support,
-            # so the config's parent directory and gispublisher's cwd have to be
-            # the same place for this to be found at all (see gispublisher_runner
+            # --config resolution is cwd-relative with no absolute-path support, so
+            # the config's parent directory and gispublisher's cwd have to be the
+            # same place for this to be found at all (see gispublisher_runner
             # .start()'s generate branch).
             config_path = build_deploy_config(
                 "local", {}, name=name, version=version, dest_dir=self.output_dir,
@@ -1820,54 +1909,12 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             QMessageBox.critical(self, "Error", str(e))
             return
 
-        progress_dialog = ProgressDialog(title="Generating...", parent=self)
-        progress_dialog.show()
-
-        self.runner = GISPublisherRunner(
-            layers=selected_layers,
-            output_dir=self.output_dir,
-            chart_folder=self.selected_chart_folder,
-            chart_items=self.get_selected_chart_items(),
-            model_entries=self.get_selected_model_entries(),
-            processing_crs=self.processing_crs_override() or None,
-            use_project_crs=self.useProjectCrsCheck.isChecked(),
-            progress_label=progress_dialog.statusLabel,
-            progress_bar=progress_dialog.progressBar,
-            output_text=progress_dialog.outputText,
-            parent=self,
-            debug=self.DEBUG,
-            finished_callback=lambda: self.on_generate_finished(progress_dialog, config_path, len(selected_layers)),
-        )
-        progress_dialog.closeButton.clicked.connect(self.runner.cancel)
-
-        try:
-            self.runner.start(generate=True, config_path=config_path, gispub_path=self._gispub_path)
-        except Exception as e:
-            progress_dialog.close()
-            self._remove_config_file(config_path)
-            QMessageBox.critical(self, "Error", str(e))
-
-    def on_generate_finished(self, progress_dialog, config_path, layer_count):
-        progress_dialog.set_finished_state()
-        progress_dialog.closeButton.clicked.disconnect()
-        progress_dialog.closeButton.clicked.connect(progress_dialog.close)
-        if not self.DEBUG:
-            progress_dialog.close()
-        self._remove_config_file(config_path)
-
-        # Recorded so the log stays reachable from History even after the
-        # (auto-closing) progress dialog is gone — previously a Generate run
-        # left no trace at all once its dialog closed.
-        state_store.append_run_record(
-            run_type="generate",
-            project_title=QgsProject.instance().title() or QgsProject.instance().baseName(),
-            layer_count=layer_count,
-            chart_count=len(self.get_selected_chart_items() or []),
-            model_count=len(self.get_selected_model_entries()),
-            exit_code=getattr(self.runner, "exit_code", -1),
-            duration_seconds=self.runner.duration_seconds(),
-            log_lines=self.runner.log_lines,
-            output_dir=self.output_dir,
+        runner = self._create_runner(selected_layers, self.output_dir)
+        record = dict(run_type="generate", output_dir=self.output_dir, **self._run_counts(selected_layers))
+        self._start_job(
+            runner, "generate", name, "",
+            dict(generate=True, config_path=config_path, gispub_path=self._gispub_path),
+            config_path, record,
         )
 
     def run_deploy(self, selected_layers):
@@ -1881,14 +1928,23 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             return
 
         deploy_type, fields = self.collect_deploy_fields()
+        problem = deploy_problem(deploy_type, fields)
+        if problem:
+            QMessageBox.warning(self, "Invalid deploy settings", problem)
+            return
+
         # docker_safe_app_name, not the raw field: see its docstring for why a
         # DSL-valid name can still break every server-to-GeoServer call.
         name = naming.docker_safe_app_name(self.appNameEdit.text().strip())
         version = self.appVersionEdit.text().strip() or "1.0.0"
 
         try:
+            deployment_dir = self._deployment_dir(name)
+            # The config sits in the deployment folder, which is also the CLI's cwd
+            # (its --config is cwd-relative), so the generated app lands in
+            # <deployment_dir>/output.
             config_path = build_deploy_config(
-                deploy_type, fields, name=name, version=version,
+                deploy_type, fields, name=name, version=version, dest_dir=deployment_dir,
                 gispublisher_root=self._gispublisher_root,
             )
         except Exception as e:
@@ -1900,57 +1956,14 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             if os.path.isdir(docker_bin):
                 os.environ["PATH"] += os.pathsep + docker_bin
 
-        progress_dialog = ProgressDialog(title="Deploying...", parent=self)
-        progress_dialog.show()
-
-        self.runner = GISPublisherRunner(
-            layers=selected_layers,
-            output_dir=None,
-            chart_folder=self.selected_chart_folder,
-            chart_items=self.get_selected_chart_items(),
-            model_entries=self.get_selected_model_entries(),
-            processing_crs=self.processing_crs_override() or None,
-            use_project_crs=self.useProjectCrsCheck.isChecked(),
-            progress_label=progress_dialog.statusLabel,
-            progress_bar=progress_dialog.progressBar,
-            output_text=progress_dialog.outputText,
-            parent=self,
-            debug=self.DEBUG,
-            finished_callback=lambda: self.on_deploy_finished(
-                progress_dialog, config_path, deploy_type, fields, len(selected_layers)
-            ),
+        output_dir = os.path.join(deployment_dir, "output")
+        runner = self._create_runner(selected_layers, output_dir)
+        record = dict(
+            run_type="deploy", deploy_type=deploy_type, deploy_fields=fields, output_dir=output_dir,
+            host=fields.get("host", ""), **self._run_counts(selected_layers),
         )
-        progress_dialog.closeButton.clicked.connect(self.runner.cancel)
-
-        try:
-            self.runner.start(config_path=config_path, gispub_path=self._gispub_path)
-        except Exception as e:
-            progress_dialog.close()
-            self._remove_config_file(config_path)
-            QMessageBox.critical(self, "Error", str(e))
-
-    def on_deploy_finished(self, progress_dialog, config_path, deploy_type, fields, layer_count):
-        progress_dialog.set_finished_state()
-        progress_dialog.closeButton.clicked.disconnect()
-        progress_dialog.closeButton.clicked.connect(progress_dialog.close)
-        if not self.DEBUG:
-            progress_dialog.close()
-        self._remove_config_file(config_path)
-
-        chart_count = len(self.get_selected_chart_items() or [])
-        model_count = len(self.get_selected_model_entries())
-        project = QgsProject.instance()
-
-        state_store.append_run_record(
-            run_type="deploy",
-            project_title=project.title() or project.baseName(),
-            deploy_type=deploy_type,
-            host=self.runner.resulting_host or fields.get("host", ""),
-            layer_count=layer_count,
-            chart_count=chart_count,
-            model_count=model_count,
-            exit_code=getattr(self.runner, "exit_code", -1),
-            duration_seconds=self.runner.duration_seconds(),
-            log_lines=self.runner.log_lines,
-            deploy_fields=fields,
+        self._start_job(
+            runner, "deploy", name, self._TARGET_LABELS.get(deploy_type, deploy_type),
+            dict(config_path=config_path, gispub_path=self._gispub_path),
+            config_path, record,
         )

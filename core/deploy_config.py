@@ -1,6 +1,7 @@
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,46 @@ def get_gispublisher_root(npm_prefix=None):
     else:
         npm_root = pathlib.Path(npm_prefix) / ("node_modules" if sys.platform == "win32" else "lib/node_modules")
     return npm_root / "@lbdudc" / "gis-publisher"
+
+
+_REMOTE_PATH_RE = re.compile(r"^/[A-Za-z0-9._\-/]+$")
+
+
+def remote_path_problem(remote_path):
+    """Why `remote_path` can't be a deployment folder on a server, or None.
+
+    Same rules as the code uploader (normalizeConfig/assertSafeRemotePath): the
+    folder is emptied on every deploy, so it must be an absolute, plain path at
+    least two levels deep — never "/", "~" or something with spaces or quotes.
+    """
+    remote_path = (remote_path or "").strip()
+    if not _REMOTE_PATH_RE.match(remote_path):
+        return (
+            "The remote folder must be an absolute path made of letters, digits and . _ - / "
+            "(for example /home/ubuntu/app)."
+        )
+    segments = [s for s in remote_path.split("/") if s]
+    if len(segments) < 2 or ".." in segments:
+        return (
+            "The remote folder is too shallow or contains '..'. Use a folder like /home/ubuntu/app: "
+            "it is emptied on every deploy."
+        )
+    return None
+
+
+def deploy_problem(deploy_type, fields):
+    """The first problem with the deploy form's values that would make the run fail
+    anyway (after minutes of building), as a sentence for the user; None when fine."""
+    if deploy_type == "ssh":
+        host, remote_path = fields.get("host", ""), fields.get("remote_repo_path")
+    elif deploy_type == "aws":
+        host, remote_path = "", fields.get("remote_path")
+    else:
+        return None
+
+    if host and (re.search(r"[\s/]", host.strip()) or "://" in host):
+        return "The host must be a name or IP address (for example 203.0.113.5), not a URL."
+    return remote_path_problem(remote_path)
 
 
 def build_deploy_config(deploy_type, fields, name="test", version="1.0.0", dest_dir=None, gispublisher_root=None):

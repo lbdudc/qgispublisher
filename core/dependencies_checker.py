@@ -9,7 +9,7 @@ import shutil
 # gispublisher/mini-lps/gisdsl change the plugin depends on is published, so an
 # out-of-date CLI is flagged rather than failing (or silently misbehaving) deep
 # inside the generation run.
-REQUIRED_CLI_VERSION = "1.1.5"
+REQUIRED_CLI_VERSION = "1.5.0"
 
 
 def _windows_full_path():

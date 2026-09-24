@@ -20,6 +20,7 @@ construction (the writer reprojects) rather than merely warned about.
 """
 
 import os
+import re
 import shutil
 import urllib.parse
 from dataclasses import dataclass, field
@@ -209,6 +210,7 @@ RASTER_PROVIDER_WMS = "wms"
 
 RASTER_KIND_LOCAL = "local"  # a real file on disk -> stage as GeoTIFF
 RASTER_KIND_WMS = "wms"  # a WMS layer -> add to urls.wms (+ urls.wms.json scoping)
+RASTER_KIND_XYZ = "xyz"  # an XYZ tile layer -> a <name>.tiles.json sidecar
 RASTER_KIND_REJECTED = "rejected"  # can't be published; .message explains why
 
 
@@ -231,6 +233,10 @@ class RasterDescriptor:
     scale_visibility: bool = False
     min_scale: float = 0.0
     max_scale: float = 0.0
+    # Only read for a local (GDAL) raster / an XYZ layer respectively
+    crs_authid: str = ""
+    renderer_type: str = ""
+    attribution: str = ""
 
 
 @dataclass
@@ -243,6 +249,8 @@ class RasterPlan:
     # Only set when kind == RASTER_KIND_WMS: {url, layers, styles, crs, format}, each
     # a str except layers/styles which are lists (possibly empty).
     wms_request: dict = None
+    # Only set when kind == RASTER_KIND_XYZ: {url, zmin, zmax} (zmin/zmax None when unset)
+    tile_request: dict = None
 
 
 def _parse_raster_uri_params(source):
@@ -282,15 +290,9 @@ def classify_raster(descriptor):
 
         # QGIS represents XYZ tile layers as the "wms" provider with a "type=xyz"
         # URI parameter — there is no separate "xyz" providerType to check instead.
-        # The generator has no tile-layer input format at all (its only tile layer
-        # is a hardcoded OSM base), so this must be rejected, not mis-published as
-        # if it were a WMS service.
+        # They are published as tile overlays, not as a WMS service.
         if _first_param(params, "type").lower() == "xyz":
-            return RasterPlan(
-                layer_id=descriptor.layer_id,
-                kind=RASTER_KIND_REJECTED,
-                message="XYZ tile layers aren't supported by the generator.",
-            )
+            return _classify_xyz(descriptor, params)
 
         url = _first_param(params, "url", "URL")
         if not url:
@@ -334,6 +336,81 @@ def classify_raster(descriptor):
         kind=RASTER_KIND_REJECTED,
         message=f'Raster provider "{descriptor.provider_type}" isn\'t supported by the generator.',
     )
+
+
+def _classify_xyz(descriptor, params):
+    """An XYZ tile layer: kept when Leaflet can load it as it is, rejected (with the
+    reason) when it can't. The URL template must be http(s) and carry {z}, {x} and
+    {y} (or {-y}, which Leaflet supports too); quadkey templates ({q}) have no
+    Leaflet equivalent.
+    """
+    url = _first_param(params, "url", "URL")
+
+    def rejected(message):
+        return RasterPlan(layer_id=descriptor.layer_id, kind=RASTER_KIND_REJECTED, message=message)
+
+    if not url:
+        return rejected("XYZ tile layer has no URL and can't be published.")
+    if not re.match(r"^https?://", url, re.IGNORECASE):
+        return rejected("XYZ tile layer URL must be http(s) to be published.")
+    if "{q}" in url:
+        return rejected("XYZ tile layers with quadkey ({q}) URLs aren't supported by the generator.")
+    if "{z}" not in url or "{x}" not in url or not ("{y}" in url or "{-y}" in url):
+        return rejected("XYZ tile layer URL must contain {z}, {x} and {y} to be published.")
+
+    message = ""
+    if _first_param(params, "referer", "http-header:referer"):
+        message = (
+            "This tile service is configured with a Referer header, which the "
+            "generated app's browser can't send — it may refuse the tiles."
+        )
+
+    return RasterPlan(
+        layer_id=descriptor.layer_id,
+        kind=RASTER_KIND_XYZ,
+        message=message,
+        tile_request={
+            "url": url,
+            "zmin": _int_or_none(_first_param(params, "zmin")),
+            "zmax": _int_or_none(_first_param(params, "zmax")),
+        },
+    )
+
+
+def _int_or_none(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+# QGIS raster renderers whose SLD export is a RasterSymbolizer GeoServer can apply
+# (a colour ramp, a palette, gray/RGB band selection with contrast).
+SLD_RASTER_RENDERERS = frozenset(
+    {"singlebandgray", "singlebandpseudocolor", "paletted", "multibandcolor"}
+)
+
+
+def raster_sld_supported(renderer_type):
+    """True when QGIS's SLD export of this raster renderer is worth publishing as the
+    raster's style; otherwise GeoServer's own default raster style applies."""
+    return (renderer_type or "").lower() in SLD_RASTER_RENDERERS
+
+
+def raster_needs_reprojection(crs_authid):
+    """True for a raster whose CRS isn't a plain EPSG code — GeoServer only knows
+    those, so anything else (a custom/PROJ-string CRS, or none) must be warped."""
+    return not re.match(r"^EPSG:\d+$", (crs_authid or "").strip(), re.IGNORECASE)
+
+
+def build_tile_sidecar(tile_request, attribution=""):
+    """The JSON body of a ``<staged>.tiles.json`` sidecar (read by gispublisher's
+    tile-util.js): ``{url, attribution, zmin, zmax}``, unset zooms left out."""
+    body = {"url": tile_request["url"], "attribution": attribution or ""}
+    for key in ("zmin", "zmax"):
+        if tile_request.get(key) is not None:
+            body[key] = tile_request[key]
+    return body
 
 
 # ----------------------------------------------------------------------
@@ -384,8 +461,27 @@ def describe_layer(layer):
     )
 
 
+def _raster_attribution(layer):
+    """The layer's attribution text, wherever this QGIS version keeps it: server
+    properties (3.22+), the layer itself, or the metadata's rights. Best effort — an
+    attribution is display text only, so a failure just means none."""
+    for read in (
+        lambda: layer.serverProperties().attribution(),
+        lambda: layer.attribution(),
+        lambda: "; ".join(layer.metadata().rights()),
+    ):
+        try:
+            value = read()
+        except Exception:  # nosec B112 - each API only exists in some QGIS versions
+            continue
+        if value:
+            return str(value)
+    return ""
+
+
 def describe_raster(layer):
     """Build a `RasterDescriptor` from a live `QgsRasterLayer`."""
+    crs = layer.crs()
     return RasterDescriptor(
         layer_id=layer.id(),
         name=layer.name(),
@@ -395,10 +491,13 @@ def describe_raster(layer):
         scale_visibility=bool(layer.hasScaleBasedVisibility()),
         min_scale=float(layer.minimumScale()),
         max_scale=float(layer.maximumScale()),
+        crs_authid=crs.authid() if crs and crs.isValid() else "",
+        renderer_type=(layer.renderer().type() if layer.renderer() else ""),
+        attribution=_raster_attribution(layer),
     )
 
 
-def export_raster(layer, staged_basename, dest_dir):
+def export_raster(layer, staged_basename, dest_dir, reproject=False):
     """Stage `layer` — already classified as RASTER_KIND_LOCAL — into `dest_dir` as
     `<staged_basename>.tif`. Never raises; a failed export is reported to the caller,
     matching `export_layer`'s contract, so one bad raster doesn't abort the rest.
@@ -408,6 +507,29 @@ def export_raster(layer, staged_basename, dest_dir):
     """
     dest_path = os.path.join(dest_dir, staged_basename + ".tif")
     source_path = (layer.source() or "").split("|")[0]
+
+    if reproject:
+        # GeoServer only knows EPSG codes: a raster in a custom CRS is warped to
+        # WGS84 (tiled + compressed, so a big one stays a reasonable size).
+        try:
+            from osgeo import gdal
+
+            resample = "near" if (layer.renderer() and layer.renderer().type() == "paletted") else "bilinear"
+            result = gdal.Warp(
+                dest_path,
+                source_path,
+                srcSRS=layer.crs().toWkt(),
+                dstSRS=DEFAULT_TARGET_CRS,
+                format="GTiff",
+                resampleAlg=resample,
+                creationOptions=["TILED=YES", "COMPRESS=DEFLATE"],
+            )
+        except Exception as e:  # pragma: no cover - needs GDAL
+            return False, f"raster reprojection failed: {e}"
+        if result is None:
+            return False, "raster reprojection failed"
+        result = None  # close the dataset so the file is flushed
+        return True, ""
 
     if os.path.splitext(source_path)[1].lower() in (".tif", ".tiff") and os.path.isfile(source_path):
         # A straight copy preserves every band/nodata/CRS/overview detail exactly —
