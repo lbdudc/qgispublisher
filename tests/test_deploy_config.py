@@ -27,7 +27,9 @@ class GetGispublisherRootTests(unittest.TestCase):
     def test_windows_layout_from_prefix(self):
         with mock.patch.object(deploy_config.sys, "platform", "win32"):
             root = deploy_config.get_gispublisher_root(npm_prefix=r"C:\npm")
-        self.assertEqual(str(root), str(deploy_config.pathlib.Path(r"C:\npm\node_modules\@lbdudc\gis-publisher")))
+        # joined the way the code joins it: a literal backslash path only round-trips on Windows
+        expected = deploy_config.pathlib.Path(r"C:\npm") / "node_modules" / "@lbdudc" / "gis-publisher"
+        self.assertEqual(str(root), str(expected))
 
     def test_posix_layout_from_prefix(self):
         with mock.patch.object(deploy_config.sys, "platform", "linux"):
@@ -128,7 +130,12 @@ class BuildDeployConfigTests(unittest.TestCase):
 
     @unittest.skipIf(sys.platform == "win32", "POSIX file permission bits don't apply on Windows")
     def test_file_permissions_restricted_to_owner_on_posix(self):
-        path, _ = self._build("aws", {"secret_key": "shh"})
+        aws_fields = {
+            "access_key": "AKIAEXAMPLE", "secret_key": "shh", "region": "eu-west-1", "ami_id": "ami-1",
+            "instance_type": "t3.micro", "instance_name": "app", "security_group": "sg-1", "key_name": "k",
+            "username": "ubuntu", "ssh_key_path": "/k", "remote_path": "/home/ubuntu/app",
+        }
+        path, _ = self._build("aws", aws_fields)
         mode = os.stat(path).st_mode & 0o777
         self.assertEqual(mode, 0o600)
 

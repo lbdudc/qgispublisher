@@ -276,8 +276,11 @@ class PublishJobManager(QObject):
         if current is not None:
             try:
                 task.setDescription(f"GISPublisher: {job.headline} — {current.label}")
-            except Exception:  # pragma: no cover - older bindings
-                pass
+            except Exception as e:  # pragma: no cover - older bindings
+                # cosmetic only (the task's title): note it, never fail the run over it
+                QgsMessageLog.logMessage(
+                    f"Could not update the QGIS task description: {e}", _LOG_TAG, level=_level("Info")
+                )
 
     def _finish_task(self, job, ok):
         task, job.task = job.task, None
@@ -285,8 +288,10 @@ class PublishJobManager(QObject):
         if task is not None:
             try:
                 task.finalize(bool(ok))
-            except Exception:  # pragma: no cover - task already gone
-                pass
+            except Exception as e:  # pragma: no cover - task already gone
+                QgsMessageLog.logMessage(
+                    f"Could not finalize the QGIS task: {e}", _LOG_TAG, level=_level("Info")
+                )
 
     def _check_task_cancelled(self):
         """The task manager's cancel button cancels the proxy task; that means
