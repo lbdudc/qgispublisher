@@ -55,6 +55,52 @@ def entity_name(layer_basename):
     return upper_camel_case(layer_basename)
 
 
+# Every reserved word gp-gis-dsl's grammar (GISGrammar.g4) lexes as a keyword
+# token rather than a plain IDENTIFIER — both the ``TYPE`` production (the
+# property-type keywords, which double as geometry-class names) and every
+# other ``*_SYMBOL`` token spelled out as a run of case-insensitive letters
+# (``fragment``-free ``L O N G``-style rules, which ANTLR matches
+# case-insensitively). ``createEntityScheme`` (gispublisher's dsl-util.js)
+# emits ``CREATE ENTITY <entity_name(layer_basename)>`` with no suffix at
+# all — unlike layer/style identifiers, which always get a "Layer"/"Style"
+# suffix — so a layer named e.g. "point" or "polygon" becomes
+# ``CREATE ENTITY Point``/``CREATE ENTITY Polygon``, colliding with the
+# grammar's own TYPE token and failing deep inside ANTLR with an opaque
+# "no viable alternative" error instead of a clear one. Kept as a literal
+# set (not re-derived from the .g4 at runtime) since gisdsl is a separate,
+# independently-versioned repo — resync by hand if GISGrammar.g4's keyword
+# list changes.
+RESERVED_DSL_WORDS = frozenset(
+    word.lower()
+    for word in (
+        # TYPE production (property types / geometry classes)
+        "Long", "Boolean", "Integer", "Double", "LocalDate", "String",
+        "LineString", "Line", "MultiLineString", "Polygon", "MultiPolygon",
+        "Point", "MultiPoint",
+        # Other keyword tokens
+        "Create", "Gis", "Entity", "Using", "Use", "Generate", "Identifier",
+        "Relationship", "Display_String", "Required", "Unique",
+        "Bidirectional", "Mapped_By", "Layer", "Tile", "GeoJson",
+        "GeometryType", "As", "Url", "StyleLayerDescriptor", "Editable",
+        "FillColor", "StrokeColor", "FillOpacity", "StrokeOpacity",
+        "StrokeWidth", "Wms", "Style", "Is_Base_Layer", "Hidden", "Sortable",
+        "Map", "Set", "Deployment", "UrlWms", "LayerName", "Format", "Crs",
+        "BboxCrs", "MinX", "MinY", "MaxX", "MaxY", "Queryable",
+        "Attribution", "Version",
+    )
+)
+
+
+def collides_with_dsl_keyword(layer_basename):
+    """True if ``entity_name(layer_basename)`` (what ``CREATE ENTITY`` will
+    actually emit) is one of gp-gis-dsl's own reserved keywords — e.g. a
+    layer named "point", "Polygon" or "entity" — a real, previously
+    found-but-not-fixed generation failure (see WORKLOG.md). Comparison is
+    case-insensitive to match ANTLR's own case-insensitive keyword lexing.
+    """
+    return entity_name(layer_basename).lower() in RESERVED_DSL_WORDS
+
+
 def entity_url_segment(layer_basename):
     """The REST path segment / Chart Viewer entity id for a layer, e.g.
     "unemployment_by_district" -> "unemploymentByDistricts".
@@ -294,6 +340,18 @@ def dsl_safe_identifier(name, fallback_prefix="g"):
     return ascii_name
 
 
+# Subdirectory names the staging root itself reserves for something other
+# than a QGIS group: gispublisher_runner.py's own charts_temp_dir/
+# models_temp_dir siblings of the per-group directories, plus gispublisher's
+# own main.js getDirectories(), which excludes an "output" entry outright
+# (it's where the CLI writes the generated product). Staging happens on
+# Windows, where the filesystem is case-insensitive, so a QGIS group
+# literally named "Output", "Charts" or "Models" would otherwise land right
+# on top of one of these and corrupt or silently lose its own or the
+# reserved directory's contents.
+RESERVED_STAGING_DIRNAMES = frozenset({"output", "charts", "models"})
+
+
 def assign_group_dirnames(group_names):
     """The single authority for "what subdirectory will this QGIS group's
     layers be staged under" — `group_names` is an ordered iterable of the
@@ -304,9 +362,13 @@ def assign_group_dirnames(group_names):
     siblings via the same collision-avoidance rule as
     `assign_staged_basenames` (a QGIS project can easily have two group names
     that collapse to the same identifier once diacritics/punctuation are
-    stripped, e.g. "Água" and "Agua").
+    stripped, e.g. "Água" and "Agua") — and against RESERVED_STAGING_DIRNAMES,
+    seeded into `used` upfront so a group named "Output"/"Charts"/"Models"
+    gets suffixed away from the plugin's own reserved staging directories
+    exactly like any other name collision, rather than silently colliding
+    with them.
     """
-    used = set()
+    used = set(RESERVED_STAGING_DIRNAMES)
     result = {}
     for name in group_names:
         dirname = staged_basename(dsl_safe_identifier(name), used)

@@ -39,6 +39,33 @@ WARN_EMPTY_LAYER = "EMPTY_LAYER"
 WARN_NO_GEOMETRY = "NO_GEOMETRY"
 WARN_TOO_MANY_FIELDS = "TOO_MANY_FIELDS"
 WARN_RENAMED_FIELDS = "RENAMED_FIELDS"
+WARN_RESERVED_ENTITY_NAME = "RESERVED_ENTITY_NAME"
+WARN_UNSTYLABLE_RENDERER = "UNSTYLABLE_RENDERER"
+WARN_DEGRADED_RENDERER = "DEGRADED_RENDERER"
+
+# The plugin's only symbology path is QgsVectorLayer.saveSldStyle()
+# (gispublisher_runner._export_sld). Verified empirically against real QGIS
+# (headless PyQGIS 3.44, one memory layer per renderer type, actually calling
+# saveSldStyle() and reading its (message, ok) result — not just QGIS docs),
+# renderer .type() strings split into two groups:
+#
+# - RENDERER_TYPES_UNSTYLABLE: saveSldStyle() returns ok=False with a
+#   "<type> renderer cannot be converted to SLD" message. _export_sld already
+#   handles this — no SLD is written and GeoServer falls back to its own
+#   generic default style — but the failure only ever surfaces in the run
+#   log / History after a full run, not before committing to one.
+# - RENDERER_TYPES_DEGRADED: saveSldStyle() returns ok=True ("Created
+#   default style file as ...") but the SLD it writes is a generic
+#   single-symbol fallback, not the layer's actual point-displacement/
+#   cluster look — today this is reported as a plain, unqualified style
+#   export success, no warning anywhere at all.
+#
+# singleSymbol/categorizedSymbol/graduatedSymbol/RuleRenderer all export
+# faithfully (also verified) and are intentionally absent from both sets.
+RENDERER_TYPES_UNSTYLABLE = frozenset({
+    "heatmapRenderer", "25dRenderer", "invertedPolygonRenderer", "nullSymbol",
+})
+RENDERER_TYPES_DEGRADED = frozenset({"pointDisplacement", "pointCluster"})
 
 
 @dataclass(frozen=True)
@@ -67,6 +94,7 @@ class LayerDescriptor:
     min_scale: float = 0.0
     max_scale: float = 0.0
     field_aliases: dict = field(default_factory=dict)
+    renderer_type: str = ""
 
 
 @dataclass
@@ -118,6 +146,20 @@ def plan_exports(descriptors, target_crs_authid=DEFAULT_TARGET_CRS, basename_by_
             warnings.append(WARN_NO_GEOMETRY)
         if len(d.field_names) > MAX_DBF_FIELDS:
             warnings.append(WARN_TOO_MANY_FIELDS)
+        # gispublisher's createEntityScheme emits `CREATE ENTITY
+        # <naming.entity_name(staged_basename)>` with no suffix at all
+        # (unlike layer/style identifiers, which always get a "Layer"/
+        # "Style" suffix) — so a layer that stages as e.g. "point" or
+        # "polygon" collides with the DSL grammar's own TYPE keyword and
+        # fails deep inside ANTLR. Checked against the *staged* basename,
+        # since that -- not the QGIS layer's display name -- is exactly
+        # what becomes the entity identifier.
+        if naming.collides_with_dsl_keyword(basename_by_id[d.layer_id]):
+            warnings.append(WARN_RESERVED_ENTITY_NAME)
+        if d.renderer_type in RENDERER_TYPES_UNSTYLABLE:
+            warnings.append(WARN_UNSTYLABLE_RENDERER)
+        elif d.renderer_type in RENDERER_TYPES_DEGRADED:
+            warnings.append(WARN_DEGRADED_RENDERER)
 
         rename_map = naming.rename_map_for_fields(list(d.field_names))
         if rename_map:
@@ -338,6 +380,7 @@ def describe_layer(layer):
         min_scale=float(layer.minimumScale()),
         max_scale=float(layer.maximumScale()),
         field_aliases=_field_aliases(layer),
+        renderer_type=(layer.renderer().type() if layer.renderer() else ""),
     )
 
 

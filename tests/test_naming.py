@@ -209,6 +209,39 @@ class NamingTests(unittest.TestCase):
         for dirname in result.values():
             self.assertTrue(naming.is_valid_dsl_identifier(dirname))
 
+    def test_assign_group_dirnames_avoids_reserved_staging_names(self):
+        # "Output" would otherwise land on gispublisher's own generated-
+        # product directory; "Charts"/"Models" on the runner's own sidecar
+        # staging directories (case-insensitively, since staging happens on
+        # Windows).
+        result = naming.assign_group_dirnames(["Output", "charts", "MODELS", "Salud"])
+        for name, dirname in result.items():
+            self.assertNotIn(
+                dirname.lower(), naming.RESERVED_STAGING_DIRNAMES, f"{name!r} -> {dirname!r}"
+            )
+        self.assertEqual(result["Salud"], "Salud")  # untouched, no collision at all
+
+    def test_collides_with_dsl_keyword_geometry_type(self):
+        # createEntityScheme emits `CREATE ENTITY Point` with no suffix at
+        # all, colliding with the grammar's own TYPE keyword.
+        self.assertTrue(naming.collides_with_dsl_keyword("point"))
+        self.assertTrue(naming.collides_with_dsl_keyword("Polygon"))
+        self.assertTrue(naming.collides_with_dsl_keyword("MULTI_LINE_STRING"))
+
+    def test_collides_with_dsl_keyword_other_grammar_token(self):
+        self.assertTrue(naming.collides_with_dsl_keyword("entity"))
+        self.assertTrue(naming.collides_with_dsl_keyword("map"))
+
+    def test_collides_with_dsl_keyword_false_for_ordinary_name(self):
+        self.assertFalse(naming.collides_with_dsl_keyword("municipios"))
+        self.assertFalse(naming.collides_with_dsl_keyword("unemployment_by_district"))
+
+    def test_collides_with_dsl_keyword_suffixed_name_is_safe(self):
+        # A basename that collision-avoidance already suffixed (e.g.
+        # "point_1") no longer collides, since entity_name appends real
+        # characters rather than being stripped back down.
+        self.assertFalse(naming.collides_with_dsl_keyword("point_1"))
+
 
 if __name__ == "__main__":
     unittest.main()
