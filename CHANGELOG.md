@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-09-24
+
+### Added
+- **Geoprocessing models now run in the generated app.** Selected models are served by the product's QGIS WPS container and can be run from the map's toolbox. If no model is selected, the product's demo model is shipped instead.
+- **Model preflight warnings**, in each model's tooltip (with a warning icon) and in the pre-run confirm dialog; click a model or chart with warnings to read them in a dialog:
+  - steps from a Processing provider the app's container doesn't have (only `native`, `qgis` and `gdal` exist);
+  - vector inputs no published layer can satisfy (e.g. a polygon input with only point layers);
+  - fixed distances (e.g. a 2000 buffer) that the app would read as degrees, because it stores and processes data in EPSG:4326.
+- **"Run models in CRS"** (Models tab): the CRS the generated app runs models in, e.g. `EPSG:25829`. Empty means the QGIS project's CRS when that is projected, else EPSG:4326. Saved per project.
+- **QGIS spatial bookmarks** are exported and shown as a bookmarks menu in the generated map viewer.
+- **Scale-based visibility** (min/max scale) now reaches the generated map as per-layer zoom limits.
+- **"Use the project CRS for the web map"** (experimental, off by default): builds the web map in the project's projected CRS; the OpenStreetMap base layer is left out of it.
+
+### Changed
+- The project manifest (`qgis-project.json`) also carries the project CRS, bookmarks, the processing-CRS choice and the display-CRS flag.
+- README: replaced the outdated note that models aren't wired into the generated app.
+
+### Internal
+- 13 new unit tests (195 total).
+
 ## [0.4.0] - 2026-09-24
 
 ### Added

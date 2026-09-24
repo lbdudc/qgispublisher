@@ -77,10 +77,14 @@ def _export_sld(layer, dest_path):
 
 class GISPublisherRunner:
 
-    def __init__(self, layers, output_dir, progress_label, progress_bar, output_text, parent=None, finished_callback=None, chart_folder=None, chart_items=None, model_entries=None, debug=False, target_crs=layer_export.DEFAULT_TARGET_CRS):
+    def __init__(self, layers, output_dir, progress_label, progress_bar, output_text, parent=None, finished_callback=None, chart_folder=None, chart_items=None, model_entries=None, debug=False, target_crs=layer_export.DEFAULT_TARGET_CRS, processing_crs=None, use_project_crs=False):
         self.layers = layers
         self.output_dir = output_dir
         self.target_crs = target_crs
+        # Authid (e.g. "EPSG:25829") the generated app should run models in, or None.
+        self.processing_crs = processing_crs
+        # Ask gispublisher to build the web map in the QGIS project's CRS.
+        self.use_project_crs = use_project_crs
         self.progress_label = progress_label
         self.progress_bar = progress_bar
         self.output_text = output_text
@@ -334,6 +338,11 @@ class GISPublisherRunner:
             project_info = project_manifest.describe_project()
             if not project_info.get("extent"):
                 project_info["extent"] = project_manifest.layers_extent_wgs84(self.layers)
+            if self.use_project_crs and project_info.get("extent"):
+                project_info["useProjectCrs"] = True
+                project_info["extentProjected"] = project_manifest.extent_in_project_crs(project_info["extent"])
+            if self.processing_crs:
+                project_info["processingCrs"] = self.processing_crs
             manifest = project_manifest.build_manifest(
                 project_info, self.manifest_layer_entries, self.group_dir_by_name
             )

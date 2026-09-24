@@ -460,6 +460,37 @@
           </property>
          </widget>
         </item>
+        <item>
+         <widget class="QCheckBox" name="useProjectCrsCheck">
+          <property name="toolTip">
+           <string>Experimental: build the web map in the QGIS project's projected CRS instead of Web Mercator. The OpenStreetMap base layer is left out of it, since its tiles only exist in Web Mercator.</string>
+          </property>
+          <property name="text">
+           <string>Use the project CRS for the web map (experimental)</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" name="processingCrsLayout">
+          <item>
+           <widget class="QLabel" name="processingCrsLabel">
+            <property name="text">
+             <string>Run models in CRS:</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="processingCrsEdit">
+            <property name="toolTip">
+             <string>The generated app stores data in EPSG:4326, so a model with a fixed distance (e.g. a 2000 m buffer) would read it as degrees. Enter a metric CRS such as EPSG:25829 to run models in it. Leave empty to use the project CRS when it is projected.</string>
+            </property>
+            <property name="placeholderText">
+             <string>Auto (project CRS if projected), e.g. EPSG:25829</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
        </layout>
       </widget>
      </widget>

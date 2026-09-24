@@ -209,5 +209,101 @@ class StageModelTests(unittest.TestCase):
             self.assertNotIn('"', basename)
 
 
+# Shape captured from a real QGIS 4.2 run of the demo project's "modelo" model
+# (QgsProcessingModelAlgorithm.toVariant(), trimmed to what analyze_model reads).
+def _modelo_variant():
+    def static(value):
+        return [{"source": 2, "static_value": value}]
+
+    return {
+        "children": {
+            "native:buffer_1": {
+                "alg_id": "native:buffer",
+                "params": {
+                    "DISTANCE": static(2000.0),
+                    "SEGMENTS": static(25),
+                    "DISSOLVE": static(True),
+                    "INPUT": [{"source": 0, "parameter_name": "centros_de_salud"}],
+                },
+            },
+            "native:difference_1": {"alg_id": "native:difference", "params": {}},
+        },
+        "parameterDefinitions": {
+            "centros_de_salud": {
+                "parameter_type": "vector", "data_types": [0], "description": "Centros de salud",
+            },
+            "municipios": {
+                "parameter_type": "vector", "data_types": [2], "description": "Municipios",
+            },
+            "zonas": {"parameter_type": "sink", "data_type": -1, "description": "Zonas"},
+        },
+    }
+
+
+def _param_type(alg_id, name):
+    return "distance" if name == "DISTANCE" else "number"
+
+
+class AnalyzeModelTests(unittest.TestCase):
+    def test_clean_model_with_matching_layers_has_no_warnings(self):
+        warnings = model_discovery.analyze_model(
+            _modelo_variant(),
+            param_type_lookup=_param_type,
+            layer_geometries={"point", "polygon"},
+            processing_crs_geographic=False,
+        )
+        self.assertEqual(warnings, [])
+
+    def test_fixed_distance_warns_on_geographic_data(self):
+        warnings = model_discovery.analyze_model(
+            _modelo_variant(), param_type_lookup=_param_type, processing_crs_geographic=True
+        )
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("2000", warnings[0])
+        self.assertIn("degrees", warnings[0])
+
+    def test_distance_check_needs_a_type_lookup(self):
+        self.assertEqual(model_discovery.analyze_model(_modelo_variant()), [])
+
+    def test_non_distance_and_boolean_static_values_are_ignored(self):
+        variant = _modelo_variant()
+        # SEGMENTS=25 and DISSOLVE=True are static too, but neither is a distance
+        warnings = model_discovery.analyze_model(variant, param_type_lookup=_param_type)
+        self.assertEqual(len(warnings), 1)
+
+    def test_unsupported_provider_is_flagged(self):
+        variant = {"children": {
+            "grass7:v.buffer_1": {"alg_id": "grass7:v.buffer", "params": {}},
+            "native:buffer_1": {"alg_id": "native:buffer", "params": {}},
+        }}
+        warnings = model_discovery.analyze_model(variant)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("grass7", warnings[0])
+
+    def test_vector_input_without_matching_geometry(self):
+        warnings = model_discovery.analyze_model(
+            _modelo_variant(), layer_geometries={"point"}, processing_crs_geographic=False
+        )
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("Municipios", warnings[0])
+        self.assertIn("polygon", warnings[0])
+
+    def test_any_geometry_input_needs_some_vector_layer(self):
+        variant = {"parameterDefinitions": {
+            "in": {"parameter_type": "source", "data_types": [-1], "description": "Input"},
+        }}
+        self.assertEqual(model_discovery.analyze_model(variant, layer_geometries={"line"}), [])
+        self.assertEqual(len(model_discovery.analyze_model(variant, layer_geometries=set())), 1)
+
+    def test_input_matching_skipped_without_layers(self):
+        self.assertEqual(
+            model_discovery.analyze_model(_modelo_variant(), processing_crs_geographic=False), []
+        )
+
+    def test_empty_or_missing_variant(self):
+        self.assertEqual(model_discovery.analyze_model(None), [])
+        self.assertEqual(model_discovery.analyze_model({}), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -54,6 +54,8 @@ class ProjectSelectionTests(unittest.TestCase):
             "chart_folder": "/charts",
             "chart_files": ["a.json", "b.json"],
             "model_folder": "/models",
+            "processing_crs": "EPSG:25829",
+            "use_project_crs": True,
             "output_dir": "/out",
             "action": "deploy",
             "deploy_type": "ssh",

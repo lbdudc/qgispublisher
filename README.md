@@ -81,7 +81,15 @@ The plugin includes QGIS geoprocessing models (`.model3`) in the generated appli
 
 Both show up as a checkable list on the Models tab with no extra steps; use the refresh button after saving a new one. **Add folder…** appends models from anywhere else — e.g. one a colleague shared on a network drive — as a third source, filtered to `.model3` files.
 
-> **Note:** the current GISPublisher CLI (`@lbdudc/gis-publisher`) stages selected models into the generated application's build input but doesn't yet wire them into the generated app itself — this is a limitation of that separate tool, not of the plugin's discovery. Track [gispublisher](https://github.com/lbdudc/gispublisher) for when model support lands there.
+### In the generated app
+
+Selected models are copied into the generated product's `server/models/` folder and served by its QGIS WPS container. Open the **toolbox** button on the map, pick your model under **Models**, choose an input layer for each vector input, and run it; each layer output is added to the map when the job finishes. If you select no models, the product ships a small demo model instead.
+
+Before a run, the plugin checks each checked model and warns (in the model's tooltip and the pre-run confirmation) about things that work in QGIS but not in the generated app:
+
+- steps that use algorithms from a provider the app's processing container doesn't have (only `native`, `qgis` and `gdal` are available);
+- vector inputs no published layer can satisfy (for example a polygon input with only point layers published);
+- fixed distances, such as a 2000-unit buffer: the app stores and processes data in EPSG:4326, so unless the QGIS project itself uses a projected CRS the number is read as degrees. With a projected project CRS, models run in that CRS instead.
 
 ## Deploying your application
 

@@ -43,6 +43,7 @@ def save_project_selection(project, selection):
 
     `selection` keys (all optional): layer_ids (list[str]), model_ids (list[str]),
     chart_folder (str), chart_files (list[str] or None), model_folder (str),
+    processing_crs (str),
     output_dir (str), action ("generate"/"deploy"), deploy_type (str),
     app_name (str), app_version (str).
     """
@@ -61,6 +62,8 @@ def save_project_selection(project, selection):
         project.writeEntry(SCOPE, "chart_files_all", False)
         project.writeEntry(SCOPE, "chart_files", list(chart_files))
     project.writeEntry(SCOPE, "model_folder", selection.get("model_folder") or "")
+    project.writeEntry(SCOPE, "processing_crs", selection.get("processing_crs") or "")
+    project.writeEntry(SCOPE, "use_project_crs", bool(selection.get("use_project_crs")))
     project.writeEntry(SCOPE, "output_dir", selection.get("output_dir") or "")
     project.writeEntry(SCOPE, "action", selection.get("action") or "generate")
     project.writeEntry(SCOPE, "deploy_type", selection.get("deploy_type") or "local")
@@ -81,6 +84,8 @@ def load_project_selection(project):
     chart_files_all, _ = project.readBoolEntry(SCOPE, "chart_files_all", True)
     chart_files, _ = project.readListEntry(SCOPE, "chart_files", [])
     model_folder, _ = project.readEntry(SCOPE, "model_folder", "")
+    processing_crs, _ = project.readEntry(SCOPE, "processing_crs", "")
+    use_project_crs, _ = project.readBoolEntry(SCOPE, "use_project_crs", False)
     output_dir, _ = project.readEntry(SCOPE, "output_dir", "")
     action, _ = project.readEntry(SCOPE, "action", "generate")
     deploy_type, _ = project.readEntry(SCOPE, "deploy_type", "local")
@@ -93,6 +98,8 @@ def load_project_selection(project):
         "chart_folder": chart_folder,
         "chart_files": None if chart_files_all else list(chart_files),
         "model_folder": model_folder,
+        "processing_crs": processing_crs,
+        "use_project_crs": use_project_crs,
         "output_dir": output_dir,
         "action": action,
         "deploy_type": deploy_type,

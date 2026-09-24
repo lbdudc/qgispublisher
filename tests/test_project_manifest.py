@@ -176,5 +176,35 @@ class BuildManifestTests(unittest.TestCase):
         self.assertEqual(manifest["layers"][1]["visible"], False)
 
 
+class BookmarkAndCrsTests(unittest.TestCase):
+    def test_bookmarks_keep_named_reprojected_extents(self):
+        extent = {"crs": "EPSG:4326", "xmin": -9.0, "ymin": 42.0, "xmax": -7.0, "ymax": 43.5}
+        result = project_manifest.build_bookmark_entries([("  A Coruna ", extent)])
+        self.assertEqual(
+            result,
+            [{"name": "A Coruna", "xmin": -9.0, "ymin": 42.0, "xmax": -7.0, "ymax": 43.5}],
+        )
+
+    def test_bookmarks_drop_unnamed_or_unprojectable(self):
+        extent = {"xmin": 0, "ymin": 0, "xmax": 1, "ymax": 1}
+        self.assertEqual(
+            project_manifest.build_bookmark_entries([("", extent), ("x", None), (None, extent)]),
+            [],
+        )
+
+    def test_crs_info(self):
+        self.assertEqual(
+            project_manifest.build_crs_info("EPSG:25829", False, "+proj=utm +zone=29"),
+            {"authid": "EPSG:25829", "isGeographic": False, "proj4": "+proj=utm +zone=29"},
+        )
+        self.assertEqual(
+            project_manifest.build_crs_info("EPSG:4326", True),
+            {"authid": "EPSG:4326", "isGeographic": True},
+        )
+
+    def test_crs_info_without_authid_is_none(self):
+        self.assertIsNone(project_manifest.build_crs_info("", False, "+proj=x"))
+
+
 if __name__ == "__main__":
     unittest.main()

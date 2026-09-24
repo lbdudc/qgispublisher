@@ -5,7 +5,7 @@ import time
 
 from qgis.PyQt import uic
 from qgis.PyQt.QtCore import Qt, QThread, pyqtSignal
-from qgis.PyQt.QtGui import QIcon, QKeySequence
+from qgis.PyQt.QtGui import QCursor, QIcon, QKeySequence
 from qgis.PyQt.QtWidgets import (
     QAction,
     QComboBox,
@@ -21,7 +21,7 @@ from qgis.PyQt.QtWidgets import (
     QStyle,
     QTableWidgetItem,
 )
-from qgis.core import Qgis, QgsMessageLog, QgsProject, QgsMapLayer, QgsSettings, QgsWkbTypes
+from qgis.core import Qgis, QgsCoordinateReferenceSystem, QgsMessageLog, QgsProject, QgsMapLayer, QgsSettings, QgsWkbTypes
 
 from .progress_dialog import ProgressDialog
 from .chart_builder_dialog import ChartBuilderDialog
@@ -55,6 +55,8 @@ DEPLOY_PAGE_AWS = 2
 # rebuilt, so switching "Show details" is an instant column show/hide, not a
 # full reload.
 LAYER_COL_NAME = 0
+# Item data holding a list of warning strings (models list, charts list)
+WARNINGS_ROLE = Qt.ItemDataRole.UserRole + 1
 LAYER_COL_TYPE = 1
 LAYER_COL_FEATURES = 2
 LAYER_COL_CRS = 3
@@ -226,9 +228,15 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self.selectAllChartsButton.clicked.connect(lambda: self.toggle_all_checked(self.chartFilesList))
         self.chartFilesList.customContextMenuRequested.connect(self.show_chart_context_menu)
 
+        # Clicking a model/chart that has warnings opens them in a dialog —
+        # the tooltip alone only appears on hover and is easy to miss.
+        self.chartFilesList.itemClicked.connect(self.show_chart_warnings)
+        self.modelFilesList.itemClicked.connect(self.show_model_warnings)
+
         self.refreshModelsButton.clicked.connect(self.refresh_models_list)
         self.selectModelFolderButton.clicked.connect(self.select_model_folder)
         self.clearModelFolderButton.clicked.connect(self.clear_model_folder)
+        self.processingCrsEdit.editingFinished.connect(self.refresh_models_list)
         self.selectAllModelsButton.clicked.connect(lambda: self.toggle_all_checked(self.modelFilesList))
 
         self.radioGenerate.toggled.connect(self.update_action_stack)
@@ -725,6 +733,39 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         }
         return basenames, fields_by_basename
 
+    def _click_was_on_checkbox(self, list_widget, item):
+        """Whether the click that just happened landed on ``item``'s check box
+        (toggling it) rather than on its text — only the latter should open
+        the warnings dialog."""
+        indicator = self.style().pixelMetric(QStyle.PixelMetric.PM_IndicatorWidth) + 8
+        x = list_widget.viewport().mapFromGlobal(QCursor.pos()).x()
+        return x - list_widget.visualItemRect(item).left() < indicator
+
+    def _show_warnings(self, list_widget, item, name, warnings):
+        if not warnings or self._click_was_on_checkbox(list_widget, item):
+            return
+        QMessageBox.warning(
+            self,
+            f"Warnings: {name}",
+            "\n".join(f"\u2022 {w}" for w in warnings),
+        )
+
+    def show_chart_warnings(self, item):
+        self._show_warnings(self.chartFilesList, item, item.text(), item.data(WARNINGS_ROLE))
+
+    def show_model_warnings(self, item):
+        """Full, layer-aware warnings for the clicked model (computed now, so
+        they reflect the layers currently checked, unlike the list tooltip)."""
+        entry = self._model_entries_by_id.get(item.data(Qt.ItemDataRole.UserRole))
+        warnings = []
+        if entry is not None:
+            warnings = model_discovery.model_warnings(
+                entry, self.get_selected_layers(), self._project_crs_is_geographic()
+            )
+        self._show_warnings(
+            self.modelFilesList, item, entry.display_name if entry else item.text(), warnings
+        )
+
     def _apply_chart_validation_icons(self):
         """Mark each chart file with a warning icon/tooltip when it looks like it
         won't render against the currently selected layers."""
@@ -750,6 +791,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
                 continue
 
             issues = chart_builder.validate_chart_spec(raw_text, basenames, fields_by_basename)
+            item.setData(WARNINGS_ROLE, issues or [])
             if issues:
                 item.setIcon(warning_icon)
                 item.setToolTip("\n".join(issues))
@@ -880,16 +922,53 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self._model_entries_by_id = {entry.id: entry for entry in entries}
 
         self.modelFilesList.clear()
+        geographic = self._project_crs_is_geographic()
+        warning_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
         for entry in entries:
+            # Layer-independent preflight only (unsupported provider, fixed
+            # distances) -- which layers get published can still change; the
+            # input-matching check runs in _confirm_run_summary instead.
+            warnings = model_discovery.model_warnings(entry, None, geographic)
             item = QListWidgetItem(f"{entry.display_name}  ({entry.source})")
+            if warnings:
+                item.setIcon(warning_icon)
             item.setData(Qt.ItemDataRole.UserRole, entry.id)
             tooltip_parts = [p for p in (entry.parameter_summary(), entry.source_file_path) if p]
+            tooltip_parts.extend(f"\u26a0 {w}" for w in warnings)
             item.setToolTip("\n".join(tooltip_parts))
             if had_items:
                 item.setCheckState(Qt.CheckState.Checked if entry.id in previously_checked else Qt.CheckState.Unchecked)
             else:
                 item.setCheckState(Qt.CheckState.Checked)
             self.modelFilesList.addItem(item)
+
+    def processing_crs_override(self):
+        """The CRS typed into "Run models in CRS" if it is a valid one, else
+        ``""`` (empty means: follow the QGIS project's own CRS)."""
+        text = self.processingCrsEdit.text().strip()
+        if not text:
+            return ""
+        crs = QgsCoordinateReferenceSystem(text)
+        return crs.authid() if crs.isValid() and crs.authid() else ""
+
+    def _project_crs_is_geographic(self):
+        """Whether the generated app will run models in a geographic CRS: it
+        stores everything in EPSG:4326, so yes unless a processing CRS was
+        typed in or the QGIS project itself is in a projected CRS (both are
+        handed to the WPS service as its processing CRS by gispublisher)."""
+        override = self.processing_crs_override()
+        crs = QgsCoordinateReferenceSystem(override) if override else QgsProject.instance().crs()
+        return not (crs.isValid() and not crs.isGeographic())
+
+    def _model_warning_lines(self, selected_layers):
+        """Preflight warnings for every checked model, given the layers about
+        to be published -- one ``"<model>: <warning>"`` string each."""
+        geographic = self._project_crs_is_geographic()
+        lines = []
+        for entry in self.get_selected_model_entries():
+            for warning in model_discovery.model_warnings(entry, selected_layers, geographic):
+                lines.append(f"{entry.display_name}: {warning}")
+        return lines
 
     def select_model_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select extra models folder", "")
@@ -1297,6 +1376,8 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             "chart_folder": self.selected_chart_folder or "",
             "chart_files": self.get_selected_chart_items(),
             "model_folder": self.selected_model_folder or "",
+            "processing_crs": self.processingCrsEdit.text().strip(),
+            "use_project_crs": self.useProjectCrsCheck.isChecked(),
             "output_dir": self.output_dir or "",
             "action": "deploy" if self.radioDeploy.isChecked() else "generate",
             "deploy_type": self.current_deploy_type(),
@@ -1335,6 +1416,8 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
                     item.setCheckState(Qt.CheckState.Checked if item.text() in chart_files else Qt.CheckState.Unchecked)
             self._apply_chart_validation_icons()
 
+        self.processingCrsEdit.setText(selection.get("processing_crs", ""))
+        self.useProjectCrsCheck.setChecked(bool(selection.get("use_project_crs")))
         if selection["model_folder"] and os.path.isdir(selection["model_folder"]):
             self.selected_model_folder = selection["model_folder"]
             self.modelFolderPathLabel.setText(self.selected_model_folder)
@@ -1655,6 +1738,12 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             f"Models: {model_count} selected",
         ]
 
+        model_warnings = self._model_warning_lines(selected_layers)
+        if model_warnings:
+            lines.append("")
+            lines.append("\u26a0 Model warnings:")
+            lines.extend(f"  \u2022 {w}" for w in model_warnings)
+
         reply = QMessageBox.question(
             self,
             "Confirm run",
@@ -1740,6 +1829,8 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             chart_folder=self.selected_chart_folder,
             chart_items=self.get_selected_chart_items(),
             model_entries=self.get_selected_model_entries(),
+            processing_crs=self.processing_crs_override() or None,
+            use_project_crs=self.useProjectCrsCheck.isChecked(),
             progress_label=progress_dialog.statusLabel,
             progress_bar=progress_dialog.progressBar,
             output_text=progress_dialog.outputText,
@@ -1818,6 +1909,8 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             chart_folder=self.selected_chart_folder,
             chart_items=self.get_selected_chart_items(),
             model_entries=self.get_selected_model_entries(),
+            processing_crs=self.processing_crs_override() or None,
+            use_project_crs=self.useProjectCrsCheck.isChecked(),
             progress_label=progress_dialog.statusLabel,
             progress_bar=progress_dialog.progressBar,
             output_text=progress_dialog.outputText,

@@ -94,6 +94,64 @@ def build_layer_entry(descriptor, staged_basename, tree_entry=None):
     return entry
 
 
+def build_bookmark_entries(named_extents):
+    """Pure: ``[(name, wgs84_extent_dict_or_None), ...]`` -> the manifest's
+    ``project.bookmarks`` list of ``{"name", "xmin", "ymin", "xmax", "ymax"}``.
+    A bookmark with no name, or whose extent couldn't be reprojected to
+    EPSG:4326, is dropped — the generated app can't fly to it either way.
+    """
+    entries = []
+    for name, extent in named_extents:
+        name = (name or "").strip()
+        if not name or not extent:
+            continue
+        entries.append({
+            "name": name,
+            "xmin": extent["xmin"],
+            "ymin": extent["ymin"],
+            "xmax": extent["xmax"],
+            "ymax": extent["ymax"],
+        })
+    return entries
+
+
+def build_crs_info(authid, is_geographic, proj4=None):
+    """Pure: the manifest's ``project.crs`` block. ``authid`` is e.g.
+    ``"EPSG:25829"`` (empty for a custom CRS with no authority id, in which
+    case there is nothing gispublisher could name it by — returns ``None``).
+    """
+    if not authid:
+        return None
+    info = {"authid": authid, "isGeographic": bool(is_geographic)}
+    if proj4:
+        info["proj4"] = proj4
+    return info
+
+
+def extent_in_project_crs(extent_wgs84):
+    """``extent_wgs84`` (the manifest's ``project.extent`` dict) transformed into
+    the QGIS project's own CRS, as ``{"xmin","ymin","xmax","ymax"}``, or ``None``.
+    gispublisher needs it to size a custom Leaflet CRS's resolutions.
+    """
+    from qgis.core import (
+        QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject, QgsRectangle,
+    )
+
+    try:
+        project = QgsProject.instance()
+        wgs84 = QgsCoordinateReferenceSystem("EPSG:4326")
+        rect = QgsRectangle(
+            extent_wgs84["xmin"], extent_wgs84["ymin"], extent_wgs84["xmax"], extent_wgs84["ymax"]
+        )
+        rect = QgsCoordinateTransform(wgs84, project.crs(), project).transformBoundingBox(rect)
+        return {
+            "xmin": rect.xMinimum(), "ymin": rect.yMinimum(),
+            "xmax": rect.xMaximum(), "ymax": rect.yMaximum(),
+        }
+    except Exception:
+        return None
+
+
 def remap_field_aliases(field_aliases, rename_map):
     """``field_aliases`` (keyed by the *original* QGIS field name) re-keyed
     through ``rename_map`` (``ExportPlan.rename_map``, original -> DBF-safe
@@ -150,7 +208,39 @@ def describe_project():
     except Exception:  # nosec B110 - best-effort; caller has a layer-union fallback
         pass
 
-    return {"title": title, "extent": extent}
+    return {
+        "title": title,
+        "extent": extent,
+        "crs": _describe_project_crs(project),
+        "bookmarks": _describe_bookmarks(project),
+    }
+
+
+def _describe_project_crs(project):
+    """``project.crs`` for the manifest, best-effort (``None`` on any failure)."""
+    try:
+        crs = project.crs()
+        if not crs.isValid():
+            return None
+        try:
+            proj4 = crs.toProj()
+        except Exception:  # nosec B110 - older QGIS; the proj4 string is optional
+            proj4 = None
+        return build_crs_info(crs.authid(), crs.isGeographic(), proj4)
+    except Exception:
+        return None
+
+
+def _describe_bookmarks(project):
+    """The project's own spatial bookmarks as WGS84 extents, best-effort."""
+    try:
+        named = []
+        for bookmark in project.bookmarkManager().bookmarks():
+            extent = bookmark.extent()
+            named.append((bookmark.name(), _extent_to_wgs84_dict(extent, extent.crs())))
+        return build_bookmark_entries(named) or None
+    except Exception:
+        return None
 
 
 def layers_extent_wgs84(layers):
