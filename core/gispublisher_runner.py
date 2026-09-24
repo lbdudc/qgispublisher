@@ -528,14 +528,24 @@ class GISPublisherRunner:
         msg_box.setIcon(QMessageBox.Icon.Information if not failed else QMessageBox.Icon.Warning)
         msg_box.setWindowTitle("Process completed")
 
+        # Both branches can offer "Open folder"; only deploy (when a host
+        # URL was actually seen in the CLI's own output — see
+        # _record_output) can also offer "Open app". Mirrors
+        # HistoryDialog.on_open()'s same host-or-folder fallback for a past
+        # run, so a fresh run and a restored one behave identically.
+        open_app_button = None
         if self.generate:
             text = "The application was generated successfully."
-            open_button = msg_box.addButton("Open folder", QMessageBox.ButtonRole.ActionRole)
         else:
             text = "Deployment completed successfully."
             if self.resulting_host:
                 text += f"\n\nThe application is available at:\n{self.resulting_host}"
-            open_button = None
+                open_app_button = msg_box.addButton("Open app", QMessageBox.ButtonRole.ActionRole)
+        open_folder_button = (
+            msg_box.addButton("Open folder", QMessageBox.ButtonRole.ActionRole)
+            if self.output_dir and os.path.isdir(self.output_dir)
+            else None
+        )
 
         if failed:
             text += f"\n\n{len(failed)} layer(s) were not published:\n" + "\n".join(
@@ -546,7 +556,10 @@ class GISPublisherRunner:
         msg_box.addButton(QMessageBox.StandardButton.Ok)
         msg_box.exec()
 
-        if self.generate and msg_box.clickedButton() == open_button:
+        clicked = msg_box.clickedButton()
+        if open_app_button and clicked == open_app_button:
+            QDesktopServices.openUrl(QUrl(self.resulting_host))
+        elif open_folder_button and clicked == open_folder_button:
             QDesktopServices.openUrl(QUrl.fromLocalFile(self.output_dir))
 
     def duration_seconds(self):

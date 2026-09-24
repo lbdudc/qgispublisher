@@ -30,10 +30,16 @@ class HistoryDialog(QDialog, FORM_CLASS):
     dialog's own fields (app name/output folder, deploy type and its fields),
     so that one action is relayed to the caller via `restore_requested`
     instead of being handled here; everything else (open, view log, clear) is
-    fully self-contained in this dialog.
+    fully self-contained in this dialog. `run_again_requested` is the same
+    idea for "Run again" — restore fields *and* immediately run, which for
+    generate/local-deploy records the caller can do without any further
+    input (see `_apply_history_restore`'s `run_again` flag on the receiving
+    end); an ssh/aws record has no stored credentials to run with, so the
+    caller falls back to restore-only for those.
     """
 
     restore_requested = pyqtSignal(dict)
+    run_again_requested = pyqtSignal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -42,6 +48,7 @@ class HistoryDialog(QDialog, FORM_CLASS):
         self.historyList.itemSelectionChanged.connect(self.update_buttons_state)
         self.openButton.clicked.connect(self.on_open)
         self.restoreButton.clicked.connect(self.on_restore)
+        self.runAgainButton.clicked.connect(self.on_run_again)
         self.viewLogButton.clicked.connect(self.on_view_log)
         self.clearButton.clicked.connect(self.on_clear)
         self.closeButton.clicked.connect(self.close)
@@ -76,6 +83,7 @@ class HistoryDialog(QDialog, FORM_CLASS):
         record = item.data(Qt.ItemDataRole.UserRole) if item else None
         self.openButton.setEnabled(bool(record and (record.get("host") or record.get("output_dir"))))
         self.restoreButton.setEnabled(record is not None)
+        self.runAgainButton.setEnabled(record is not None)
         self.viewLogButton.setEnabled(bool(record and record.get("log_tail")))
 
     def on_open(self):
@@ -94,6 +102,19 @@ class HistoryDialog(QDialog, FORM_CLASS):
         if not record:
             return
         self.restore_requested.emit(record)
+
+    def on_run_again(self):
+        item = self.historyList.currentItem()
+        record = item.data(Qt.ItemDataRole.UserRole) if item else None
+        if not record:
+            return
+        # Close first: the run itself happens in the main dialog (its
+        # progress dialog would otherwise be layered under this one), and
+        # for ssh/aws _apply_history_restore falls back to restore-only, in
+        # which case the user needs the main dialog visible to fill in
+        # credentials themselves.
+        self.close()
+        self.run_again_requested.emit(record)
 
     def on_view_log(self):
         item = self.historyList.currentItem()

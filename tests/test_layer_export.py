@@ -13,7 +13,7 @@ from core import layer_export  # noqa: E402
 
 
 def _descriptor(layer_id, name, source="", crs_authid="EPSG:4326", feature_count=1,
-                 field_names=(), has_geometry=True):
+                 field_names=(), has_geometry=True, renderer_type=""):
     return layer_export.LayerDescriptor(
         layer_id=layer_id,
         name=name,
@@ -22,6 +22,7 @@ def _descriptor(layer_id, name, source="", crs_authid="EPSG:4326", feature_count
         feature_count=feature_count,
         field_names=tuple(field_names),
         has_geometry=has_geometry,
+        renderer_type=renderer_type,
     )
 
 
@@ -92,6 +93,37 @@ class PlanExportsTests(unittest.TestCase):
         plans = layer_export.plan_exports([_descriptor("id1", "x", field_names=["name", "pop"])])
         self.assertNotIn(layer_export.WARN_RENAMED_FIELDS, plans[0].warnings)
         self.assertEqual(plans[0].rename_map, {})
+
+    def test_reserved_dsl_keyword_basename_is_warned(self):
+        # Stages as "point" -> CREATE ENTITY Point -> collides with the DSL
+        # grammar's own TYPE token.
+        plans = layer_export.plan_exports([_descriptor("id1", "Point")])
+        self.assertIn(layer_export.WARN_RESERVED_ENTITY_NAME, plans[0].warnings)
+
+    def test_ordinary_basename_is_not_warned_as_reserved(self):
+        plans = layer_export.plan_exports([_descriptor("id1", "Municipios")])
+        self.assertNotIn(layer_export.WARN_RESERVED_ENTITY_NAME, plans[0].warnings)
+
+    def test_unstylable_renderer_is_warned(self):
+        # Verified against real QGIS: saveSldStyle() fails outright for these.
+        for renderer_type in layer_export.RENDERER_TYPES_UNSTYLABLE:
+            plans = layer_export.plan_exports([_descriptor("id1", "x", renderer_type=renderer_type)])
+            self.assertIn(layer_export.WARN_UNSTYLABLE_RENDERER, plans[0].warnings, renderer_type)
+            self.assertNotIn(layer_export.WARN_DEGRADED_RENDERER, plans[0].warnings, renderer_type)
+
+    def test_degraded_renderer_is_warned(self):
+        # Verified against real QGIS: saveSldStyle() "succeeds" but with a
+        # generic default style, silently dropping the actual look.
+        for renderer_type in layer_export.RENDERER_TYPES_DEGRADED:
+            plans = layer_export.plan_exports([_descriptor("id1", "x", renderer_type=renderer_type)])
+            self.assertIn(layer_export.WARN_DEGRADED_RENDERER, plans[0].warnings, renderer_type)
+            self.assertNotIn(layer_export.WARN_UNSTYLABLE_RENDERER, plans[0].warnings, renderer_type)
+
+    def test_faithful_renderer_types_are_not_warned(self):
+        for renderer_type in ("singleSymbol", "categorizedSymbol", "graduatedSymbol", "RuleRenderer"):
+            plans = layer_export.plan_exports([_descriptor("id1", "x", renderer_type=renderer_type)])
+            self.assertNotIn(layer_export.WARN_UNSTYLABLE_RENDERER, plans[0].warnings, renderer_type)
+            self.assertNotIn(layer_export.WARN_DEGRADED_RENDERER, plans[0].warnings, renderer_type)
 
     def test_sld_rename_map_covers_case_only_differences_dbf_rename_map_skips(self):
         # "TOTAL" is a valid, short DBF field name, so rename_map (DBF-safety only)

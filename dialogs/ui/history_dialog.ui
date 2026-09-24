@@ -66,6 +66,19 @@
       </widget>
      </item>
      <item>
+      <widget class="QPushButton" name="runAgainButton">
+       <property name="enabled">
+        <bool>false</bool>
+       </property>
+       <property name="text">
+        <string>Run again</string>
+       </property>
+       <property name="toolTip">
+        <string>Restore this run's settings and run immediately (generate and local-deploy runs only — SSH/AWS credentials are never stored, so those only restore fields)</string>
+       </property>
+      </widget>
+     </item>
+     <item>
       <widget class="QPushButton" name="viewLogButton">
        <property name="enabled">
         <bool>false</bool>

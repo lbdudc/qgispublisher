@@ -447,6 +447,33 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
                 f"{len(descriptor.field_names)} fields exceeds the {layer_export.MAX_DBF_FIELDS}-field "
                 "shapefile limit — extra fields will be dropped."
             )
+        # Checked against this layer's own *preferred* staged basename, not
+        # the fully collision-resolved one plan_exports() would compute
+        # across every selected layer (that needs the whole selection, which
+        # a single-descriptor check doesn't have) — a rare, narrow gap: if
+        # another selected layer happens to share the exact same preferred
+        # name, staging might suffix this one away from the collision
+        # instead. Still the right call upfront, since staging most often
+        # leaves an already-unique preferred name untouched.
+        preferred = naming.preferred_basename_from_source(descriptor.name, descriptor.source)
+        if naming.collides_with_dsl_keyword(preferred):
+            issues.append(
+                f'Layer name "{descriptor.name}" collides with a reserved word in the '
+                "generator's DSL grammar — generation will fail with a cryptic parser "
+                f'error. Rename the layer to something other than "{preferred}" before running.'
+            )
+        if descriptor.renderer_type in layer_export.RENDERER_TYPES_UNSTYLABLE:
+            issues.append(
+                f'"{descriptor.renderer_type}" symbology (e.g. heatmap, 2.5D, inverted '
+                "polygon) can't be converted to SLD — this layer will publish with no "
+                "custom style at all, GeoServer's generic default instead."
+            )
+        elif descriptor.renderer_type in layer_export.RENDERER_TYPES_DEGRADED:
+            issues.append(
+                f'"{descriptor.renderer_type}" symbology (point displacement/cluster) '
+                "has no SLD equivalent — QGIS will export a generic single-symbol style, "
+                "not the actual displaced/clustered look."
+            )
         return issues
 
     def _describe_layer_for_table(self, layer, group):
@@ -497,6 +524,18 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         has_warning = plan.kind == layer_export.RASTER_KIND_REJECTED
         if plan.message:
             tooltip_parts.append(plan.message)
+        if plan.kind == layer_export.RASTER_KIND_LOCAL:
+            # Informational, not a warning icon: this is normal, expected
+            # behavior for every local raster today, not something to fix —
+            # export_raster() byte-copies/re-encodes as GeoTIFF, never
+            # reading band rendering/color ramps/contrast enhancement, so
+            # the published raster always looks different from how it's
+            # styled in QGIS. Surfacing it here just makes that an informed
+            # choice instead of a silent one.
+            tooltip_parts.append(
+                "Note: raster styling (band rendering, color ramps, contrast) is not "
+                "preserved — this will publish unstyled."
+            )
         return (
             layer.name(), kind_label, "—", "—", group_text,
             "\n".join(tooltip_parts), has_warning,
@@ -1181,9 +1220,19 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
     def open_history_dialog(self):
         dialog = HistoryDialog(parent=self)
         dialog.restore_requested.connect(self._apply_history_restore)
+        dialog.run_again_requested.connect(lambda record: self._apply_history_restore(record, run_again=True))
         dialog.exec()
 
-    def _apply_history_restore(self, record):
+    def _apply_history_restore(self, record, run_again=False):
+        """Populate fields from a past run's History record. With
+        `run_again=True`, also immediately runs — but only for a
+        `generate` or `local`-deploy record, since those need no secret
+        field ssh/aws would (SSH/AWS credentials are never persisted at all,
+        see _RESTORABLE_DEPLOY_FIELDS in core/state_store.py); for those two,
+        `run_again` silently falls back to restore-only and the user fills
+        in credentials before clicking Run themselves, exactly like a plain
+        Restore always has.
+        """
         run_type = record.get("run_type") or "deploy"
         if run_type == "generate":
             self.radioGenerate.setChecked(True)
@@ -1192,7 +1241,10 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
                 self.output_dir = output_dir
                 self.outputFolderLabel.setStyleSheet("")
                 self.outputFolderLabel.setText(output_dir)
-            QMessageBox.information(self, "Settings restored", "Output folder restored from this run.")
+            if run_again:
+                self.on_run_clicked()
+            else:
+                QMessageBox.information(self, "Settings restored", "Output folder restored from this run.")
             return
 
         deploy_type = record.get("deploy_type", "local")
@@ -1215,6 +1267,10 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
                 widget.setCurrentText(str(value))
             else:
                 widget.setText(str(value))
+
+        if run_again and deploy_type == "local":
+            self.on_run_clicked()
+            return
 
         QMessageBox.information(
             self,
@@ -1516,6 +1572,9 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self.check_requirements(on_done=lambda: self._continue_run_clicked(selected_layers))
 
     def _continue_run_clicked(self, selected_layers):
+        if not self._confirm_run_summary(selected_layers):
+            return
+
         if not self.requirements_met():
             QMessageBox.warning(
                 self,
@@ -1540,6 +1599,70 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             self.run_generate(selected_layers)
         else:
             self.run_deploy(selected_layers)
+
+    @staticmethod
+    def _checked_item_count(list_widget):
+        return sum(
+            1 for i in range(list_widget.count())
+            if list_widget.item(i).checkState() == Qt.CheckState.Checked
+        )
+
+    def _predicted_map_count(self, selected_layers):
+        """1 overview map + 1 per distinct non-empty group among the checked
+        layers — exactly what gispublisher_runner will stage (a group's own
+        subdirectory gets its own map; the root/default directory's map
+        becomes the overview) and what main.js's createMapBlock loop then
+        builds (see WORKLOG's "overview map" entry). Reads the Group column
+        already computed by load_layers() (project_manifest.describe_layer_tree)
+        rather than re-walking the QGIS layer tree a second time.
+        """
+        selected_ids = {layer.id() for layer in selected_layers}
+        groups = set()
+        for row in range(self.layersTable.rowCount()):
+            item = self.layersTable.item(row, LAYER_COL_NAME)
+            if item.data(Qt.ItemDataRole.UserRole) not in selected_ids:
+                continue
+            group_text = self.layersTable.item(row, LAYER_COL_GROUP).text()
+            if group_text and group_text != "—":
+                groups.add(group_text)
+        return 1 + len(groups)
+
+    def _confirm_run_summary(self, selected_layers):
+        """One-screen summary of what this run will actually do, shown before
+        any validation — so an obviously-wrong selection (e.g. forgot to
+        check a layer, wrong deploy target) is caught before a multi-minute
+        run, not after. Built entirely from data already in memory; no new
+        QGIS reads."""
+        vector_count = sum(1 for l in selected_layers if l.type() == QgsMapLayer.LayerType.VectorLayer)
+        raster_count = len(selected_layers) - vector_count
+        chart_count = self._checked_item_count(self.chartFilesList)
+        model_count = self._checked_item_count(self.modelFilesList)
+        map_count = self._predicted_map_count(selected_layers)
+
+        if self.radioGenerate.isChecked():
+            target_line = f"Action: Generate → {self.output_dir or '(no output folder selected)'}"
+        else:
+            target_kind = "Local" if self.radioLocal.isChecked() else "SSH" if self.radioSSH.isChecked() else "AWS"
+            target_line = f"Action: Deploy ({target_kind})"
+
+        lines = [
+            f"App name: {self.appNameEdit.text().strip() or '(empty)'}  v{self.appVersionEdit.text().strip()}",
+            target_line,
+            "",
+            f"Layers: {len(selected_layers)} selected ({vector_count} vector, {raster_count} raster)",
+            f"Maps: {map_count} ({map_count - 1} group map(s) + 1 overview)" if map_count > 1 else "Maps: 1",
+            f"Charts: {chart_count} selected",
+            f"Models: {model_count} selected",
+        ]
+
+        reply = QMessageBox.question(
+            self,
+            "Confirm run",
+            "\n".join(lines) + "\n\nProceed?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        return reply == QMessageBox.StandardButton.Yes
 
     def _validate_app_name(self):
         """gispublisher's dsl-util.js interpolates the app name directly into
