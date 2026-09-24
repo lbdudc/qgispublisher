@@ -2,34 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.7.0] - 2026-09-24
-
-### Added
-- **Deploys run in the background.** The progress window has a **Run in background** button; the run keeps going (also with the main dialog closed), shows up in the QGIS task manager with its progress (and can be cancelled from there) and ends with a message-bar notification (**Open app** / **Open folder** / **Details**). One run at a time; the main window's button becomes **Show progress…** meanwhile.
-- **A readable progress window** for Generate and Deploy: a list of steps with status and duration, a step-measured progress bar, the state of each service while the app starts, and a result panel with the app URL (**Open app**, **Copy link**, **Open folder**). The raw Docker/CLI output is under **Show details** (opened automatically when a run fails).
-- **Plain-language failures**: Docker not running/installed, port already in use, SSH authentication failed, server unreachable, sudo needed, a service that did not start, etc., each with a hint.
-- **Deploy form validation**: the host must not be a URL and the remote folder must be a safe absolute path (it is emptied on every deploy).
-- Each deploy has a **persistent per-app folder** under the QGIS profile (`GISPublisher/deployments/<app>`), recorded in History, instead of a shared temp folder.
-
-### Changed
-- A deploy now ends when every service is healthy (one-shot services such as the data importer must have exited successfully), not when the containers merely started.
-- Cancel also stops what the CLI started (docker compose, ssh), and works while layers are still being staged.
-- `GISPublisherRunner` no longer touches any widget: it emits signals, and a `PublishJobManager` owns the run.
-- Needs `@lbdudc/gis-publisher` 1.5.0 (older CLIs still work, with an indeterminate bar and the plain log).
-
-## [0.6.0] - 2026-09-24
-
-### Added
-- **XYZ tile layers** (OpenTopoMap, Stamen, any `{z}/{x}/{y}` service) are now published as tile overlays in the generated app, keeping their QGIS order, visibility, opacity, scale limits and zoom range. Quadkey (`{q}`) URLs and non-http(s) URLs are still refused, with the reason.
-- **Raster styles.** A local raster with a singleband gray/pseudocolor, paletted or multiband renderer publishes its QGIS style (colour ramp, contrast) as an SLD; other renderers use GeoServer's default raster style. The layer table's tooltip says which.
-- **Rasters in a non-EPSG CRS** are reprojected to EPSG:4326 when staged (GeoServer only knows EPSG codes).
-
-### Changed
-- Local rasters are named `r_<name>` in GeoServer, and the generated app now asks for that name (it used to ask for a different one, so a GeoTIFF never showed). They are also uploaded on Generate + `docker compose up`, not only on Deploy.
-- A layer named `raster` is now flagged by the preflight: `RASTER` is a keyword of the layer DSL.
-- Needs `@lbdudc/gis-publisher` 1.4.0.
-
-## [0.5.0] - 2026-09-24
+## [0.4.1] - 2026-09-24
 
 ### Added
 - **Geoprocessing models now run in the generated app.** Selected models are served by the product's QGIS WPS container and can be run from the map's toolbox. If no model is selected, the product's demo model is shipped instead.
@@ -41,13 +14,31 @@ All notable changes to this project will be documented in this file.
 - **QGIS spatial bookmarks** are exported and shown as a bookmarks menu in the generated map viewer.
 - **Scale-based visibility** (min/max scale) now reaches the generated map as per-layer zoom limits.
 - **"Use the project CRS for the web map"** (experimental, off by default): builds the web map in the project's projected CRS; the OpenStreetMap base layer is left out of it.
+- **XYZ tile layers** (OpenTopoMap, Stamen, any `{z}/{x}/{y}` service) are now published as tile overlays in the generated app, keeping their QGIS order, visibility, opacity, scale limits and zoom range. Quadkey (`{q}`) URLs and non-http(s) URLs are still refused, with the reason.
+- **Raster styles.** A local raster with a singleband gray/pseudocolor, paletted or multiband renderer publishes its QGIS style (colour ramp, contrast) as an SLD; other renderers use GeoServer's default raster style. The layer table's tooltip says which.
+- **Rasters in a non-EPSG CRS** are reprojected to EPSG:4326 when staged (GeoServer only knows EPSG codes).
+- **Deploys run in the background.** The progress window has a **Run in background** button; the run keeps going (also with the main dialog closed), shows up in the QGIS task manager with its progress (and can be cancelled from there) and ends with a message-bar notification (**Open app** / **Open folder** / **Details**). One run at a time; the main window's button becomes **Show progress…** meanwhile.
+- **A readable progress window** for Generate and Deploy: a list of steps with status and duration, a step-measured progress bar, the state of each service while the app starts, and a result panel with the app URL (**Open app**, **Copy link**, **Open folder**). The raw Docker/CLI output is under **Show details** (opened automatically when a run fails).
+- **Plain-language failures**: Docker not running/installed, port already in use, SSH authentication failed, server unreachable, sudo needed, a service that did not start, etc., each with a hint.
+- **Deploy form validation**: the host must not be a URL and the remote folder must be a safe absolute path (it is emptied on every deploy).
+- Each deploy has a **persistent per-app folder** under the QGIS profile (`GISPublisher/deployments/<app>`), recorded in History, instead of a shared temp folder.
 
 ### Changed
 - The project manifest (`qgis-project.json`) also carries the project CRS, bookmarks, the processing-CRS choice and the display-CRS flag.
+- Local rasters are named `r_<name>` in GeoServer, and the generated app now asks for that name (it used to ask for a different one, so a GeoTIFF never showed). They are also uploaded on Generate + `docker compose up`, not only on Deploy.
+- A layer named `raster` is now flagged by the preflight: `RASTER` is a keyword of the layer DSL.
+- A deploy now ends when every service is healthy (one-shot services such as the data importer must have exited successfully), not when the containers merely started.
+- Cancel also stops what the CLI started (docker compose, ssh), and works while layers are still being staged.
+- `GISPublisherRunner` no longer touches any widget: it emits signals, and a `PublishJobManager` owns the run.
 - README: replaced the outdated note that models aren't wired into the generated app.
+- Needs `@lbdudc/gis-publisher` 1.5.0 (older CLIs still work, with an indeterminate bar and the plain log).
+
+### Fixed
+- Errors while updating or finalizing the QGIS task entry are written to the QGIS message log instead of being swallowed silently (Bandit B110).
+- The CI unit-test job failed on Linux: two tests only passed on Windows (an AWS config test missing fields, and a test comparing a literal Windows path).
 
 ### Internal
-- 13 new unit tests (195 total).
+- 232 unit tests (182 in 0.4.0); they pass on Linux and Windows.
 
 ## [0.4.0] - 2026-09-24
 
