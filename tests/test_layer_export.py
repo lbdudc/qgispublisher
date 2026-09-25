@@ -258,11 +258,11 @@ class ClassifyRasterTests(unittest.TestCase):
 
 class RasterHelpersTests(unittest.TestCase):
     def test_sld_is_supported_for_the_renderers_geoserver_can_apply(self):
-        for renderer in ("singlebandgray", "singlebandpseudocolor", "paletted", "multibandcolor"):
+        for renderer in ("singlebandgray", "singlebandpseudocolor", "paletted", "multibandcolor", "hillshade"):
             self.assertTrue(layer_export.raster_sld_supported(renderer), renderer)
 
     def test_sld_is_not_supported_for_other_renderers(self):
-        for renderer in ("hillshade", "contour", "", None, "someplugin"):
+        for renderer in ("contour", "", None, "someplugin"):
             self.assertFalse(layer_export.raster_sld_supported(renderer), renderer)
 
     def test_epsg_crs_needs_no_reprojection(self):

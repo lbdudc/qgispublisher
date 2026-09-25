@@ -344,6 +344,22 @@ class RewriteUnsupportedMarksTests(unittest.TestCase):
         self.assertIn("cross</", new_text)
         self.assertNotIn("cross_fill", new_text)
 
+    def test_hatch_and_shape_names_become_geoserver_shapes(self):
+        # QGIS writes bare "horline"/"slash"...; GeoServer draws nothing unless it is shape://
+        for qgis_name, geoserver_name in (
+            ("horline", "shape://horline"), ("line", "shape://vertline"),
+            ("slash", "shape://slash"), ("backslash", "shape://backslash"),
+            ("diamond", "square"), ("hexagon", "circle"), ("arrowhead", "triangle"), ("cross2", "x"),
+        ):
+            sld = f"<Mark><WellKnownName>{qgis_name}</WellKnownName></Mark>"
+            _, new_text = self._rewrite(sld)
+            self.assertIn(f">{geoserver_name}<", new_text, qgis_name)
+
+    def test_every_qgis_marker_shape_maps_to_something_geoserver_knows(self):
+        known = {"square", "circle", "triangle", "star", "cross", "x"}
+        for name, target in shapefile_io.QGIS_ONLY_MARK_NAMES.items():
+            self.assertTrue(target in known or target.startswith("shape://"), (name, target))
+
     def test_standard_mark_name_is_left_untouched(self):
         sld = "<Mark><WellKnownName>circle</WellKnownName></Mark>"
         changed, new_text = self._rewrite(sld)
@@ -364,6 +380,43 @@ class RewriteUnsupportedMarksTests(unittest.TestCase):
     def test_rewrite_unsupported_marks_noop_when_file_missing(self):
         # Must not raise for a layer whose SLD export failed upstream.
         shapefile_io.rewrite_unsupported_marks("/no/such/file.sld")
+
+
+class ClampGraphicMarginsTests(unittest.TestCase):
+    SLD = (
+        '<se:PolygonSymbolizer><se:Fill><se:GraphicFill><se:Graphic><se:Mark/>'
+        '<se:Size>{size}</se:Size></se:Graphic></se:GraphicFill></se:Fill>'
+        '<se:VendorOption name="graphic-margin">{margin}</se:VendorOption></se:PolygonSymbolizer>'
+    )
+
+    def test_margin_larger_than_the_graphic_is_capped(self):
+        # GeoServer draws nothing at all when a margin exceeds the graphic's size
+        changed, text = shapefile_io.clamp_margins_text(self.SLD.format(size=4, margin="6.4 6.4"))
+        self.assertTrue(changed)
+        self.assertIn('graphic-margin">4 4<', text)
+
+    def test_each_value_of_a_four_value_margin_is_capped(self):
+        _, text = shapefile_io.clamp_margins_text(self.SLD.format(size=10, margin="2 12 3 30"))
+        self.assertIn('graphic-margin">2 10 3 10<', text)
+
+    def test_a_margin_that_fits_is_left_alone(self):
+        changed, text = shapefile_io.clamp_margins_text(self.SLD.format(size=10, margin="8"))
+        self.assertFalse(changed)
+        self.assertIn('graphic-margin">8<', text)
+
+
+class RenameFunctionsTests(unittest.TestCase):
+    def test_qgis_function_names_become_geoserver_ones(self):
+        sld = '<ogc:Filter><ogc:Function name="upper"><ogc:PropertyName>kind</ogc:PropertyName></ogc:Function></ogc:Filter>'
+        changed, text = shapefile_io.rename_functions_text(sld)
+        self.assertTrue(changed)
+        self.assertIn('name="strToUpperCase"', text)
+
+    def test_a_function_geoserver_already_knows_is_left_alone(self):
+        sld = '<ogc:Function name="round"><ogc:PropertyName>v</ogc:PropertyName></ogc:Function>'
+        changed, text = shapefile_io.rename_functions_text(sld)
+        self.assertFalse(changed)
+        self.assertEqual(text, sld)
 
 
 if __name__ == "__main__":

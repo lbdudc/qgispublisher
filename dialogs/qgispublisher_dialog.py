@@ -560,14 +560,14 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         if descriptor.renderer_type in layer_export.RENDERER_TYPES_UNSTYLABLE:
             issues.append(
                 f'"{descriptor.renderer_type}" symbology (e.g. heatmap, 2.5D, inverted '
-                "polygon) can't be converted to SLD — this layer will publish with no "
-                "custom style at all, GeoServer's generic default instead."
+                "polygon) has no SLD equivalent — this layer will publish with its plain "
+                "symbols (a heatmap as semi-transparent points), not the special rendering."
             )
         elif descriptor.renderer_type in layer_export.RENDERER_TYPES_DEGRADED:
             issues.append(
                 f'"{descriptor.renderer_type}" symbology (point displacement/cluster) '
-                "has no SLD equivalent — QGIS will export a generic single-symbol style, "
-                "not the actual displaced/clustered look."
+                "has no SLD equivalent — this layer will publish with its plain point "
+                "symbols, not the displaced/clustered look."
             )
         return issues
 

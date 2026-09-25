@@ -280,7 +280,6 @@ def layers_extent_wgs84(layers):
     one that fails to reproject, is skipped rather than aborting the whole
     calculation. Returns ``None`` if nothing usable was found.
     """
-    from qgis.core import QgsRectangle
 
     # A tile/WMS basemap (an XYZ OpenStreetMap layer, say) covers the whole world and
     # would make the app open zoomed out on the planet: the data layers decide the

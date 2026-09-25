@@ -3,7 +3,7 @@ from qgis.PyQt.QtCore import QObject, QProcess, QProcessEnvironment, pyqtSignal
 from qgis.PyQt.QtWidgets import QApplication
 from qgis.core import QgsMapLayer, QgsProject
 from ..core.dependencies_checker import check_node_gispublisher
-from ..core import deploy_progress, layer_export, model_discovery, naming, project_manifest, shapefile_io, web_options
+from ..core import deploy_progress, layer_export, model_discovery, naming, project_manifest, shapefile_io, style_prep, web_options
 
 # Staging dirs created under the OS temp dir per run; never cleaned up automatically
 # by the OS, so the plugin sweeps stale ones on its own (see cleanup_old_temp_dirs).
@@ -291,12 +291,19 @@ class GISPublisherRunner(QObject):
                 shapefile_io.rewrite_dbf_field_names(staged_dbf, field_names, plan.rename_map)
 
             dest_sld = os.path.join(dest_dir, plan.staged_basename + ".sld")
-            sld_ok, sld_message = _export_sld(layer, dest_sld)
+            # What QGIS's SLD export cannot carry (a heatmap, a gradient fill, a nested ELSE
+            # rule, a label expression...) is approximated on a copy of the layer first
+            style_layer, style_notes = style_prep.prepare_vector_layer(layer)
+            sld_ok, sld_message = _export_sld(style_layer, dest_sld)
             self.sld_results.append((layer.name(), sld_ok, sld_message))
+            for note in style_notes:
+                self.log_lines.append(f"[STYLE] {layer.name()}: {note}")
             if sld_ok:
                 if plan.sld_rename_map:
                     shapefile_io.rewrite_sld_field_references(dest_sld, plan.sld_rename_map)
                 shapefile_io.rewrite_unsupported_marks(dest_sld)
+                shapefile_io.clamp_graphic_margins(dest_sld)
+                shapefile_io.rename_sld_functions(dest_sld)
 
         for layer in local_raster_layers:
             if self.cancelled:

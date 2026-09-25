@@ -400,7 +400,7 @@ def _int_or_none(value):
 # QGIS raster renderers whose SLD export is a RasterSymbolizer GeoServer can apply
 # (a colour ramp, a palette, gray/RGB band selection with contrast).
 SLD_RASTER_RENDERERS = frozenset(
-    {"singlebandgray", "singlebandpseudocolor", "paletted", "multibandcolor"}
+    {"singlebandgray", "singlebandpseudocolor", "paletted", "multibandcolor", "hillshade"}
 )
 
 

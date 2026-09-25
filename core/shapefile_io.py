@@ -45,8 +45,35 @@ _WELL_KNOWN_NAME_LOCALNAMES = {"WellKnownName"}
 # actually hit in practice onto their closest GeoServer-supported equivalent; add to
 # it as new unsupported names turn up rather than guessing the full QGIS shape
 # catalog up front.
+#
+# Every shape QGIS can write (Qgis.MarkerShape) plus the names its line-pattern fills
+# and brush styles use are covered here. GeoServer knows square, circle, triangle, star,
+# cross and x, the hatch shapes ``shape://horline|vertline|slash|backslash`` and
+# ``brush://denseN``; the rest become the nearest of those.
+_TO_SQUARE = (
+    "diamond", "diagonal_half_square", "half_square", "quarter_square", "square_with_corners",
+    "rounded_square", "parallelogram_left", "parallelogram_right", "trapezoid", "shield",
+)
+_TO_TRIANGLE = (
+    "equilateral_triangle", "left_half_triangle", "right_half_triangle",
+    "arrow", "arrowhead", "filled_arrowhead",
+)
+_TO_CIRCLE = (
+    "pentagon", "hexagon", "octagon", "decagon", "heart", "half_arc", "quarter_arc",
+    "third_arc", "quarter_circle", "semi_circle", "third_circle",
+)
 QGIS_ONLY_MARK_NAMES = {
     "cross_fill": "cross",
+    "cross2": "x",
+    "asterisk_fill": "star",
+    "star_diamond": "star",
+    "horline": "shape://horline",
+    "line": "shape://vertline",
+    "slash": "shape://slash",
+    "backslash": "shape://backslash",
+    **{name: "square" for name in _TO_SQUARE},
+    **{name: "triangle" for name in _TO_TRIANGLE},
+    **{name: "circle" for name in _TO_CIRCLE},
 }
 
 
@@ -213,3 +240,107 @@ def _rewrite_element_text(text, localnames, value_map):
 
     body = ET.tostring(root, encoding="unicode")
     return True, xml_decl + body
+
+
+_POLYGON_SYMBOLIZER_RE = re.compile(r"(<(?:\w+:)?PolygonSymbolizer>)(.*?)(</(?:\w+:)?PolygonSymbolizer>)", re.S)
+_GRAPHIC_SIZE_RE = re.compile(r"<(?:\w+:)?GraphicFill>.*?<(?:\w+:)?Size>\s*([0-9.]+)\s*</(?:\w+:)?Size>", re.S)
+_GRAPHIC_MARGIN_RE = re.compile(r'(<(?:\w+:)?VendorOption name="graphic-margin">)([^<]*)(</(?:\w+:)?VendorOption>)')
+
+
+def clamp_margins_text(text):
+    """Cap each ``graphic-margin`` of a pattern fill at the size of its graphic.
+
+    QGIS spaces the marks of a point-pattern fill with a margin around each one, but
+    GeoServer draws *nothing* when a margin is larger than the graphic. Capping keeps the
+    pattern visible (a little denser than in QGIS) instead of the layer vanishing.
+    Returns (changed, new_text).
+    """
+    changed = False
+
+    def fix_symbolizer(match):
+        nonlocal changed
+        head, body, tail = match.groups()
+        size_match = _GRAPHIC_SIZE_RE.search(body)
+        if not size_match:
+            return match.group(0)
+        size = float(size_match.group(1))
+
+        def fix_margin(m):
+            nonlocal changed
+            values = []
+            for token in m.group(2).split():
+                try:
+                    value = float(token)
+                except ValueError:
+                    return m.group(0)
+                if value > size:
+                    changed = True
+                    value = size
+                values.append(f"{value:g}")
+            return m.group(1) + " ".join(values) + m.group(3)
+
+        return head + _GRAPHIC_MARGIN_RE.sub(fix_margin, body) + tail
+
+    new_text = _POLYGON_SYMBOLIZER_RE.sub(fix_symbolizer, text)
+    return changed, new_text
+
+
+def clamp_graphic_margins(sld_path):
+    """Apply ``clamp_margins_text`` to a staged SLD file in place."""
+    if not os.path.isfile(sld_path):
+        return
+    try:
+        with open(sld_path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return
+    changed, new_text = clamp_margins_text(text)
+    if changed:
+        with open(sld_path, "w", encoding="utf-8") as f:
+            f.write(new_text)
+
+
+# QGIS writes an expression function under its own name inside a filter; GeoServer knows
+# its own names, and refuses to create a style that calls an unknown function (the layer
+# then has no style at all). The ones with the same arguments are renamed.
+QGIS_FUNCTION_NAMES = {
+    "upper": "strToUpperCase",
+    "lower": "strToLowerCase",
+    "length": "strLength",
+    "trim": "strTrim",
+    "concat": "Concatenate",
+    "to_int": "parseInt",
+    "to_real": "parseDouble",
+}
+_FUNCTION_NAME_RE = re.compile(r'(<(?:\w+:)?Function name=")([^"]+)(")')
+
+
+def rename_functions_text(text):
+    """Rename QGIS filter functions to their GeoServer names. Returns (changed, new_text)."""
+    changed = False
+
+    def rename(match):
+        nonlocal changed
+        target = QGIS_FUNCTION_NAMES.get(match.group(2))
+        if target is None:
+            return match.group(0)
+        changed = True
+        return match.group(1) + target + match.group(3)
+
+    new_text = _FUNCTION_NAME_RE.sub(rename, text)
+    return changed, new_text
+
+
+def rename_sld_functions(sld_path):
+    """Apply ``rename_functions_text`` to a staged SLD file in place."""
+    if not os.path.isfile(sld_path):
+        return
+    try:
+        with open(sld_path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return
+    changed, new_text = rename_functions_text(text)
+    if changed:
+        with open(sld_path, "w", encoding="utf-8") as f:
+            f.write(new_text)
