@@ -167,6 +167,11 @@ class NamingTests(unittest.TestCase):
     def test_staged_basename_no_collision(self):
         self.assertEqual(naming.staged_basename("roads", set()), "roads")
 
+    def test_staged_basename_strips_accents(self):
+        # the generator drops accented letters from entity names ("Arboles" -> "rboles")
+        self.assertEqual(naming.staged_basename("\u00c1rboles singulares", set()), "Arboles singulares")
+        self.assertEqual(naming.staged_basename("Poblaci\u00f3n", {"poblacion"}), "Poblacion_2")
+
     def test_staged_basename_dedupes_case_insensitively(self):
         self.assertEqual(naming.staged_basename("Roads", {"roads"}), "Roads_2")
         self.assertEqual(naming.staged_basename("roads", {"roads", "roads_2"}), "roads_3")

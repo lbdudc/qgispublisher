@@ -213,7 +213,7 @@ class ChartBuilderDialog(QDialog, FORM_CLASS):
                 row = {}
                 for name in field_names:
                     value = feature[name]
-                    row[naming.attribute_name(name)] = _json_safe(value)
+                    row[naming.entity_property_name(name)] = _json_safe(value)
                 rows.append(row)
         except Exception:
             _LOGGER.exception("Failed to build chart preview rows")
@@ -236,7 +236,7 @@ class ChartBuilderDialog(QDialog, FORM_CLASS):
             self.validationLabel.setText(f"Could not build chart: {e}")
             return
 
-        known_attrs = {naming.attribute_name(name) for name in self._all_fields(layer)}
+        known_attrs = {naming.entity_property_name(name) for name in self._all_fields(layer)}
         issues = chart_builder.validate_chart_spec(
             json.dumps(spec),
             [self._layer_basename(layer)],

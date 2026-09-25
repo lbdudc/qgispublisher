@@ -129,6 +129,16 @@ def attribute_name(field_name):
     return "id2" if lowered == "id" else lowered
 
 
+def entity_property_name(field_name):
+    """The property name the generated app exposes for a field: what its REST API and
+    TSV export use (a chart's field references must match this).
+
+    Unlike ``attribute_name`` (the lowercase DB column, which SLD styles refer to), the
+    entity property is lowerCamelCase — ``obs_date`` is exposed as ``obsDate``.
+    """
+    return lower_camel_case(attribute_name(field_name))
+
+
 _VALID_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _NON_IDENTIFIER_CHARS = re.compile(r"[^A-Za-z0-9_]")
 # Stricter than _NON_IDENTIFIER_CHARS: also excludes underscore, for contexts
@@ -292,7 +302,10 @@ def staged_basename(preferred, used_basenames):
     comparison) with anything in `used_basenames`. Does not mutate `used_basenames` —
     callers should add the returned name before resolving the next candidate.
     """
-    candidate = preferred or "layer"
+    # The generator derives the entity name from this and drops any accented letter
+    # ("Árboles" would become "rboles"), so the accents are stripped here, the same way
+    # spl-js-engine's normalize() does, and every later name stays consistent with it.
+    candidate = normalize_diacritics(preferred or "") or "layer"
     used_lower = {u.lower() for u in used_basenames}
     if candidate.lower() not in used_lower:
         return candidate

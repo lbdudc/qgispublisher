@@ -266,6 +266,13 @@ def _describe_bookmarks(project):
         return None
 
 
+def _is_service_layer(layer):
+    try:
+        return layer.providerType() == "wms"
+    except Exception:
+        return False
+
+
 def layers_extent_wgs84(layers):
     """Union of ``layers``' extents, reprojected to EPSG:4326 — the fallback
     used when the project has no saved view extent. ``layers`` are live QGIS
@@ -273,6 +280,17 @@ def layers_extent_wgs84(layers):
     one that fails to reproject, is skipped rather than aborting the whole
     calculation. Returns ``None`` if nothing usable was found.
     """
+    from qgis.core import QgsRectangle
+
+    # A tile/WMS basemap (an XYZ OpenStreetMap layer, say) covers the whole world and
+    # would make the app open zoomed out on the planet: the data layers decide the
+    # view, and the service layers only count when nothing else has an extent.
+    layers = list(layers)
+    data_layers = [layer for layer in layers if not _is_service_layer(layer)]
+    return _union_extent_wgs84(data_layers) or _union_extent_wgs84(layers)
+
+
+def _union_extent_wgs84(layers):
     from qgis.core import QgsRectangle
 
     combined = QgsRectangle()

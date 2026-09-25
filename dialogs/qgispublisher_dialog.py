@@ -850,7 +850,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         basename_by_id = naming.assign_staged_basenames(candidates)
         basenames = list(basename_by_id.values())
         fields_by_basename = {
-            basename_by_id[layer.id()]: {naming.attribute_name(f.name()) for f in layer.fields()}
+            basename_by_id[layer.id()]: {naming.entity_property_name(f.name()) for f in layer.fields()}
             for layer in vector_layers
         }
         return basenames, fields_by_basename

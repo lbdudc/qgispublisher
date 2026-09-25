@@ -37,6 +37,16 @@ class BuildChartSpecTests(unittest.TestCase):
             self.assertIn("marks", spec)
             self.assertIn("data", spec)
 
+    def test_histogram_bin_has_an_extent(self):
+        # Vega's bin transform has no default extent; without it the chart fails to render.
+        spec = chart_builder.build_chart_spec(
+            chart_builder.CHART_TYPE_HISTOGRAM, "layer", "/backend", "value"
+        )
+        transforms = spec["data"][0]["transform"]
+        self.assertEqual(transforms[0]["type"], "extent")
+        bin_transform = next(t for t in transforms if t["type"] == "bin")
+        self.assertEqual(bin_transform["extent"], {"signal": transforms[0]["signal"]})
+
     def test_attribute_names_are_mapped(self):
         spec = chart_builder.build_chart_spec(
             chart_builder.CHART_TYPE_BAR, "layer", "http://localhost:8080", "ID", "Poblacion"
@@ -44,6 +54,16 @@ class BuildChartSpecTests(unittest.TestCase):
         spec_text = json.dumps(spec)
         self.assertIn('"id2"', spec_text)
         self.assertIn('"poblacion"', spec_text)
+
+    def test_underscored_fields_use_the_generated_camel_case_property(self):
+        # The generated app exposes obs_date as obsDate (dsl-util.js lowerCamelCase).
+        spec = chart_builder.build_chart_spec(
+            chart_builder.CHART_TYPE_BAR, "layer", "/backend", "obs_date", "area_km2"
+        )
+        spec_text = json.dumps(spec)
+        self.assertIn('"obsDate"', spec_text)
+        self.assertIn('"areaKm2"', spec_text)
+        self.assertNotIn("obs_date", spec_text)
 
     def test_inline_preview_spec_swaps_url_for_values(self):
         spec = chart_builder.build_chart_spec(

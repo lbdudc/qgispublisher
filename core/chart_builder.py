@@ -92,7 +92,7 @@ def build_chart_spec(chart_type, layer_basename, base_url, x_field, y_field=None
     """Build a concrete Vega v5 spec for chart_type against layer_basename's entity.
 
     x_field/y_field/color_field are raw QGIS field names — this maps each one through
-    naming.attribute_name itself, so callers should pass the field name as QGIS shows
+    naming.entity_property_name itself, so callers should pass the field name as QGIS shows
     it, not a pre-mapped attribute name.
 
     `field_types`, if given, maps those same raw field names to "numeric" or
@@ -101,9 +101,9 @@ def build_chart_spec(chart_type, layer_basename, base_url, x_field, y_field=None
     missing from the mapping, or no mapping at all, is treated as numeric, matching
     the scale every builder used before this parameter existed.
     """
-    x = naming.attribute_name(x_field) if x_field else x_field
-    y = naming.attribute_name(y_field) if y_field else y_field
-    color = naming.attribute_name(color_field) if color_field else color_field
+    x = naming.entity_property_name(x_field) if x_field else x_field
+    y = naming.entity_property_name(y_field) if y_field else y_field
+    color = naming.entity_property_name(color_field) if color_field else color_field
 
     builder = _BUILDERS.get(chart_type)
     if builder is None:
@@ -421,8 +421,11 @@ def _build_scatter(layer_basename, base_url, x, y, color, x_numeric=True, y_nume
 
 def _build_histogram(layer_basename, base_url, x, y, color):
     field = x
+    # Vega's bin transform has no default extent: without the extent transform first,
+    # the chart fails with 'Missing required "bin" parameter: "extent"'.
     transform = [
-        {"type": "bin", "field": field, "as": ["bin0", "bin1"]},
+        {"type": "extent", "field": field, "signal": "histExtent"},
+        {"type": "bin", "field": field, "extent": {"signal": "histExtent"}, "maxbins": 20, "as": ["bin0", "bin1"]},
         {"type": "aggregate", "groupby": ["bin0", "bin1"], "ops": ["count"], "as": ["count"]},
     ]
     spec = _base_spec(
@@ -626,7 +629,7 @@ def validate_chart_spec(raw_text, selected_layer_basenames, layer_fields_by_base
     an empty list skips those two checks (only JSON/schema/placeholder checks run).
 
     `layer_fields_by_basename`, if given, maps a layer basename to the set of its
-    attribute names (already run through naming.attribute_name) — when the spec's
+    attribute names (already run through naming.entity_property_name) — when the spec's
     data URL matches one of those layers, every `"field"`/`"fields"` reference in the
     spec is checked against that set.
     """
