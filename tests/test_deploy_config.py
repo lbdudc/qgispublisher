@@ -95,8 +95,6 @@ class BuildDeployConfigTests(unittest.TestCase):
             data["deploy"],
             {
                 "type": "aws",
-                "AWS_ACCESS_KEY_ID": "AKIA...",
-                "AWS_SECRET_ACCESS_KEY": "shh",
                 "AWS_REGION": "eu-west-1",
                 "AWS_AMI_ID": "ami-123",
                 "AWS_INSTANCE_TYPE": "t3.micro",
@@ -111,6 +109,25 @@ class BuildDeployConfigTests(unittest.TestCase):
         # No top-level "host" for AWS — nothing to default it to yet (the
         # instance doesn't exist until the deploy actually runs).
         self.assertNotIn("host", data)
+
+    def test_aws_keys_never_reach_the_config_file(self):
+        fields = {
+            "access_key": "AKIASECRETKEY", "secret_key": "topsecretvalue", "region": "eu-west-1",  # pragma: allowlist secret
+            "ami_id": "ami-123", "instance_type": "t3.micro", "instance_name": "my-instance",
+            "security_group": "sg-123", "key_name": "my-key", "username": "ec2-user",
+            "ssh_key_path": "/keys/aws.pem", "remote_path": "/srv/app",
+        }
+        path, _ = self._build("aws", fields)
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        self.assertNotIn("AKIASECRETKEY", text)
+        self.assertNotIn("topsecretvalue", text)
+
+    def test_overwrite_edited_layers_is_opt_in(self):
+        _, data = self._build("local", {})
+        self.assertNotIn("overwriteEditedLayers", data["deploy"])
+        path, data = self._build("local", {}, overwrite_edited=True)
+        self.assertTrue(data["deploy"]["overwriteEditedLayers"])
 
     def test_unknown_deploy_type_raises(self):
         with self.assertRaises(ValueError):

@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **"Web app" box** (main dialog): the app's title, logo, colour and basemap, and switches for the map search (with an optional OpenStreetMap place lookup), the legend and the data downloads. Saved per project.
+- **Popups like QGIS**: field aliases, hidden attribute-table columns, value-map labels and a simple map tip reach the generated app; the display field names the features in search results and lists.
+- **Editable layers** (new column in the Layers table): visitors of the app can add, move and delete that layer's features on the map with a generated editing password, shown when the deployment ends. A redeploy keeps their edits unless "A redeploy replaces the edits made in the web app" is on.
+- **Time slider** for layers with QGIS temporal settings (time from a date field, or a start and an end field).
+- **Update data only** (Deploy, local and SSH): reloads the data of the app already deployed from here, in seconds, when the layers and fields are unchanged.
+- **AWS sign-in by access keys or by an AWS profile**; keys can be remembered in the QGIS password manager and are passed to the CLI as environment variables instead of being written to a file.
+- Layers the plugin cannot publish (mesh, vector tile, point cloud) are listed greyed out with the reason instead of missing; nested QGIS groups keep their full path.
+
+### Requires
+- `gispublisher` 1.7.0 or later.
+
 ## [0.4.1] - 2026-09-24
 
 ### Added

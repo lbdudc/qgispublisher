@@ -25,7 +25,7 @@ import shutil
 import urllib.parse
 from dataclasses import dataclass, field
 
-from . import naming
+from . import naming, popup
 
 # ESRI Shapefile format limits an export can hit that a GeoPackage/PostGIS source
 # would never have run into.
@@ -96,6 +96,19 @@ class LayerDescriptor:
     max_scale: float = 0.0
     field_aliases: dict = field(default_factory=dict)
     renderer_type: str = ""
+    # {field name: {"alias"?, "hidden"?, "valueMap"?, ...}}, the manifest's per-field
+    # info. Its "alias" entries mirror ``field_aliases``; kept separate so a
+    # descriptor built without it (older callers, tests) still works.
+    field_info: dict = field(default_factory=dict)
+    # The field QGIS shows a feature by (the layer's display expression, when that is
+    # just a field): what the generated app calls each feature. "" when there is none.
+    display_field: str = ""
+    # The QGIS map tip as a template ({{field}} placeholders), and why there is none when
+    # the map tip can't be converted ("" when there is nothing to say)
+    popup_template: str = ""
+    popup_problem: str = ""
+    # {"startField", "endField"?}: the fields QGIS reads the layer's time from (or {})
+    temporal: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -417,6 +430,34 @@ def build_tile_sidecar(tile_request, attribution=""):
 # QGIS-touching adapters — everything above this line is pure.
 # ----------------------------------------------------------------------
 
+# Layer kinds the plugin cannot publish, by the QGIS layer type's name with any "Layer"
+# suffix dropped (QGIS spells the enum both ways: MeshLayer / Mesh). Annotation and group
+# layers are QGIS internals nobody would look for in the list, so they are not here.
+_UNSUPPORTED_LAYER_KINDS = {
+    "Mesh": ("Mesh", "Mesh layers can't be published yet: only vector layers and rasters are."),
+    "VectorTile": (
+        "Vector tiles",
+        "Vector tile layers can't be published yet: only vector layers and rasters are.",
+    ),
+    "PointCloud": (
+        "Point cloud",
+        "Point cloud layers can't be published yet: only vector layers and rasters are.",
+    ),
+    "Plugin": ("Plugin layer", "Layers made by a plugin can't be published: only vector layers and rasters are."),
+}
+
+
+def unsupported_layer_info(layer_type):
+    """``(short type name, reason)`` for a QGIS layer type the plugin can't publish and
+    the user would expect to find in the list, else ``None``. ``layer_type`` is
+    ``layer.type()`` (or its name)."""
+    name = getattr(layer_type, "name", None) or str(layer_type)
+    name = name.rsplit(".", 1)[-1]
+    if name.endswith("Layer"):
+        name = name[: -len("Layer")]
+    return _UNSUPPORTED_LAYER_KINDS.get(name)
+
+
 def _layer_opacity(layer):
     """`layer.opacity()` (the unified QgsMapLayer API, QGIS 3.18+) with a safe
     fallback for anything older/unexpected — an opacity the plugin can't read
@@ -444,6 +485,7 @@ def describe_layer(layer):
     module that touches QGIS besides `export_layer`.
     """
     crs = layer.crs()
+    popup_template, popup_problem = _map_tip(layer)
     return LayerDescriptor(
         layer_id=layer.id(),
         name=layer.name(),
@@ -458,7 +500,89 @@ def describe_layer(layer):
         max_scale=float(layer.maximumScale()),
         field_aliases=_field_aliases(layer),
         renderer_type=(layer.renderer().type() if layer.renderer() else ""),
+        field_info=_field_info(layer),
+        display_field=_display_field(layer),
+        popup_template=popup_template or "",
+        popup_problem=popup_problem or "",
+        temporal=_temporal(layer),
     )
+
+
+_QUOTED_FIELD_RE = re.compile(r'^"((?:[^"]|"")+)"$')
+_BARE_FIELD_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def display_field_from_expression(expression, field_names):
+    """The field a QGIS display expression is nothing but (``"name"`` or ``name``), or
+    ``""`` when it is a real expression (a concatenation, a function...) or names a
+    field the layer doesn't have."""
+    text = (expression or "").strip()
+    match = _QUOTED_FIELD_RE.match(text)
+    name = match.group(1).replace('""', '"') if match else (text if _BARE_FIELD_RE.match(text) else "")
+    return name if name in field_names else ""
+
+
+def _display_field(layer):
+    try:
+        expression = layer.displayExpression()
+    except Exception:  # nosec B110 - a display expression is a nicety, never a reason to fail
+        return ""
+    return display_field_from_expression(expression, [f.name() for f in layer.fields()])
+
+
+def _hidden_columns(layer):
+    """``{field: {"hidden": True}}`` for the columns the attribute table hides."""
+    try:
+        columns = layer.attributeTableConfig().columns()
+    except Exception:  # nosec B110 - older QGIS / a layer without a table config
+        return {}
+    # An action-button column has no name: it is not a field
+    return {c.name: {"hidden": True} for c in columns if c.hidden and c.name}
+
+
+def _widget_info(layer):
+    """``{field: {...}}`` from the fields' editor widgets (value maps, hidden)."""
+    info = {}
+    for index, f in enumerate(layer.fields()):
+        try:
+            setup = layer.editorWidgetSetup(index)
+            data = popup.field_widget_info(setup.type(), setup.config())
+        except Exception:  # nosec B112 - a widget we can't read is just not carried over
+            continue
+        if data:
+            info[f.name()] = data
+    return info
+
+
+def _field_info(layer):
+    """``{field_name: {"alias"?, "hidden"?, "valueMap"?}}`` for every field that carries
+    something the generated app should know about (see project_manifest.build_layer_entry).
+    """
+    aliases = {name: {"alias": alias} for name, alias in _field_aliases(layer).items()}
+    return popup.merge_field_info(aliases, _hidden_columns(layer), _widget_info(layer))
+
+
+def _temporal(layer):
+    """The layer's time fields (see popup.temporal_from_properties), best-effort."""
+    try:
+        props = layer.temporalProperties()
+        mode = props.mode()
+        return popup.temporal_from_properties(
+            props.isActive(),
+            getattr(mode, "name", None) or str(mode),
+            props.startField(),
+            props.endField(),
+            [f.name() for f in layer.fields()],
+        ) or {}
+    except Exception:  # nosec B110 - time is a nicety, never a reason to fail
+        return {}
+
+
+def _map_tip(layer):
+    try:
+        return popup.convert_map_tip(layer.mapTipTemplate(), [f.name() for f in layer.fields()])
+    except Exception:  # nosec B110 - a map tip is a nicety, never a reason to fail
+        return None, None
 
 
 def _raster_attribution(layer):

@@ -349,7 +349,7 @@ def dsl_safe_identifier(name, fallback_prefix="g"):
 # literally named "Output", "Charts" or "Models" would otherwise land right
 # on top of one of these and corrupt or silently lose its own or the
 # reserved directory's contents.
-RESERVED_STAGING_DIRNAMES = frozenset({"output", "charts", "models"})
+RESERVED_STAGING_DIRNAMES = frozenset({"output", "charts", "models", "branding"})
 
 
 def assign_group_dirnames(group_names):

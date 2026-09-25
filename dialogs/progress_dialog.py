@@ -392,13 +392,19 @@ class ProgressDialog(QDialog):
             tone, title, text = _GRAY, "Cancelled", "The run was stopped before it finished."
         elif job.ok:
             tone = _AMBER if job.warnings else _GREEN
-            done = "Deployed" if job.kind == "deploy" else "Generated"
+            done = {"deploy": "Deployed", "update": "Data updated"}.get(job.kind, "Generated")
             title = f"{done} successfully" if not job.warnings else f"{done} with warnings"
             parts = []
             if job.url:
                 parts.append(f'Available at <a href="{job.url}">{job.url}</a>')
             elif job.kind == "generate" and job.output_dir:
                 parts.append(f"Written to {job.output_dir}")
+            if job.edit_account:
+                user, password = job.edit_account
+                parts.append(
+                    f"Editing account (to change data in the app): user <b>{user}</b>, password "
+                    f"<b>{password}</b> <span style='color:{_GRAY}'>(kept in the deployment folder)</span>"
+                )
             if job.warnings:
                 names = ", ".join(name for name, _message in job.warnings[:6])
                 more = "…" if len(job.warnings) > 6 else ""

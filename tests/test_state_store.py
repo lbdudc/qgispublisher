@@ -63,6 +63,22 @@ class ProjectSelectionTests(unittest.TestCase):
         base.update(overrides)
         return base
 
+    def test_web_options_round_trip_and_survive_junk(self):
+        project = _FakeProject()
+        web = {"options": {"search": False}, "title": "Río", "color": "#112233", "basemap": "carto-dark"}
+        state_store.save_project_selection(project, self._selection(web_options=web))
+        self.assertEqual(state_store.load_project_selection(project)["web_options"], web)
+
+        project.writeEntry(state_store.SCOPE, "web_options", "{not json")
+        self.assertEqual(state_store.load_project_selection(project)["web_options"], {})
+        project.writeEntry(state_store.SCOPE, "web_options", "[1, 2]")
+        self.assertEqual(state_store.load_project_selection(project)["web_options"], {})
+
+    def test_projects_saved_before_web_options_load_an_empty_dict(self):
+        project = _FakeProject()
+        state_store.save_project_selection(project, self._selection())
+        self.assertEqual(state_store.load_project_selection(project)["web_options"], {})
+
     def test_has_saved_selection_false_before_any_save(self):
         self.assertFalse(state_store.has_saved_selection(_FakeProject()))
 

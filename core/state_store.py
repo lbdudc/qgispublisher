@@ -45,7 +45,7 @@ def save_project_selection(project, selection):
     chart_folder (str), chart_files (list[str] or None), model_folder (str),
     processing_crs (str),
     output_dir (str), action ("generate"/"deploy"), deploy_type (str),
-    app_name (str), app_version (str).
+    app_name (str), app_version (str), web_options (dict, see core.web_options).
     """
     project.writeEntry(SCOPE, "app_name", selection.get("app_name") or "")
     project.writeEntry(SCOPE, "app_version", selection.get("app_version") or "")
@@ -67,6 +67,17 @@ def save_project_selection(project, selection):
     project.writeEntry(SCOPE, "output_dir", selection.get("output_dir") or "")
     project.writeEntry(SCOPE, "action", selection.get("action") or "generate")
     project.writeEntry(SCOPE, "deploy_type", selection.get("deploy_type") or "local")
+    project.writeEntry(SCOPE, "web_options", json.dumps(selection.get("web_options") or {}))
+    project.writeEntry(SCOPE, "editable_layers", list(selection.get("editable_layer_ids") or []))
+
+
+def _load_web_options(project):
+    raw, _ = project.readEntry(SCOPE, "web_options", "")
+    try:
+        value = json.loads(raw) if raw else {}
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def load_project_selection(project):
@@ -103,6 +114,8 @@ def load_project_selection(project):
         "output_dir": output_dir,
         "action": action,
         "deploy_type": deploy_type,
+        "web_options": _load_web_options(project),
+        "editable_layer_ids": list(project.readListEntry(SCOPE, "editable_layers", [])[0]),
     }
 
 

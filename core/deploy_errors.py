@@ -33,6 +33,31 @@ def _rule(pattern, flags=re.IGNORECASE):
     return register
 
 
+@_rule(r"use Deploy, the app has to be regenerated")
+def _update_needs_deploy(match, text):
+    return Explanation(
+        "The data can't be updated on its own",
+        "The layers or their fields changed since the last deployment, so the app has to be "
+        "regenerated: run Deploy again without 'Update data only'.",
+    )
+
+
+@_rule(r"has not been deployed from here yet|Nothing is deployed in")
+def _update_nothing_deployed(match, text):
+    return Explanation(
+        "There is nothing to update yet",
+        "Deploy the app first. 'Update data only' then reloads the data of that deployment.",
+    )
+
+
+@_rule(r"The app is not running|not running on the server")
+def _update_app_down(match, text):
+    return Explanation(
+        "The app is not running",
+        "Updating the data needs the app to be up. Start it (or run Deploy) and try again.",
+    )
+
+
 @_rule(r"Docker is not installed|Command not found: docker|'docker' is not recognized|docker: command not found")
 def _docker_missing(match, text):
     return Explanation(

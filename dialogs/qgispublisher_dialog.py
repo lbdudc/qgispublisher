@@ -8,6 +8,7 @@ from qgis.PyQt.QtCore import Qt, QThread, pyqtSignal
 from qgis.PyQt.QtGui import QCursor, QIcon, QKeySequence
 from qgis.PyQt.QtWidgets import (
     QAction,
+    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -25,6 +26,7 @@ from qgis.core import Qgis, QgsApplication, QgsCoordinateReferenceSystem, QgsMes
 
 from .chart_builder_dialog import ChartBuilderDialog
 from .history_dialog import HistoryDialog
+from .web_options_group import WebOptionsGroup
 from ..core.dependencies_checker import (
     find_npm,
     compare_versions,
@@ -36,7 +38,9 @@ from ..core.dependencies_checker import (
 from ..core.deploy_config import build_deploy_config, deploy_problem
 from ..core.gispublisher_runner import GISPublisherRunner, cleanup_old_temp_dirs
 from ..core.publish_job import PublishJobManager
-from ..core import model_discovery, state_store, chart_builder, connection_test, layer_export, naming, project_manifest
+from ..core import (
+    model_discovery, state_store, chart_builder, connection_test, credentials, layer_export, naming, project_manifest,
+)
 
 FORM_CLASS, _ = uic.loadUiType(
     os.path.join(os.path.dirname(__file__), "ui", "gispublisher_dialog.ui")
@@ -61,6 +65,8 @@ LAYER_COL_TYPE = 1
 LAYER_COL_FEATURES = 2
 LAYER_COL_CRS = 3
 LAYER_COL_GROUP = 4
+# Added in code (not in the .ui): whether the web app lets its visitors edit the layer
+LAYER_COL_EDIT = 5
 LAYER_DETAIL_COLUMNS = (LAYER_COL_TYPE, LAYER_COL_FEATURES, LAYER_COL_CRS, LAYER_COL_GROUP)
 
 # QgsSettings keys for the cached "latest known CLI version" check — the second
@@ -181,14 +187,17 @@ class AwsTestThread(QThread):
 
     result = pyqtSignal(bool, str)
 
-    def __init__(self, access_key, secret_key, region, parent=None):
+    def __init__(self, access_key, secret_key, region, profile="", parent=None):
         super().__init__(parent)
         self.access_key = access_key
         self.secret_key = secret_key
         self.region = region
+        self.profile = profile
 
     def run(self):
-        self.result.emit(*connection_test.test_aws_credentials(self.access_key, self.secret_key, self.region))
+        self.result.emit(
+            *connection_test.test_aws_credentials(self.access_key, self.secret_key, self.region, self.profile)
+        )
 
 
 class GISPublisherDialog(QDialog, FORM_CLASS):
@@ -199,6 +208,10 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
     def __init__(self, parent=None, job_manager=None):
         super().__init__(parent)
         self.setupUi(self)
+
+        # How the generated app looks and what it offers: built in code, below the Action box
+        self.webOptionsGroup = WebOptionsGroup(self)
+        self.actionScrollLayout.insertWidget(1, self.webOptionsGroup)
 
         # Owns the running Generate/Deploy, so it outlives this dialog. The plugin
         # passes its own; a standalone dialog gets a private one.
@@ -254,6 +267,19 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self.radioSSH.toggled.connect(self.update_deploy_stack)
         self.radioAWS.toggled.connect(self.update_deploy_stack)
 
+        self._build_aws_credentials_ui()
+
+        # "Update data only": reload the data of the app deployed from here, no rebuild
+        self.updateDataCheck = QCheckBox("Update data only (faster: no rebuild, no restart)")
+        self.updateDataCheck.setObjectName("updateDataCheck")
+        self.deployConfigLayout.insertWidget(1, self.updateDataCheck)
+        self.appNameEdit.textChanged.connect(self._refresh_update_data_check)
+        self.radioLocal.toggled.connect(self._refresh_update_data_check)
+        self.radioSSH.toggled.connect(self._refresh_update_data_check)
+        self.radioAWS.toggled.connect(self._refresh_update_data_check)
+        self.job_manager.jobFinished.connect(self._refresh_update_data_check)
+        self._refresh_update_data_check()
+
         self.sshTestConnectionButton.clicked.connect(self.test_ssh_connection)
         self.awsTestCredentialsButton.clicked.connect(self.test_aws_credentials)
         self._ssh_test_thread = None
@@ -302,6 +328,8 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         project = QgsProject.instance()
         self.appNameEdit.setText(project.title() or project.baseName() or "App")
         self.appVersionEdit.setText("1.0.0")
+        self.webOptionsGroup.set_settings(None)
+        self.webOptionsGroup.set_default_title(project.title() or project.baseName() or "")
 
     def closeEvent(self, event):
         self.save_current_selection()
@@ -361,9 +389,15 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         stretches to absorb whatever width the dialog is resized to (the thing
         that made the old QListWidget's crammed single-line text look
         unresponsive); the data columns size to their content instead."""
+        self.layersTable.setColumnCount(LAYER_COL_EDIT + 1)
+        self.layersTable.setHorizontalHeaderItem(LAYER_COL_EDIT, QTableWidgetItem("Editable"))
+        self.layersTable.horizontalHeaderItem(LAYER_COL_EDIT).setToolTip(
+            "Let the people who use the web app add, move and delete this layer's features on the map. "
+            "They need the editing password that is shown when the deployment ends."
+        )
         header = self.layersTable.horizontalHeader()
         header.setSectionResizeMode(LAYER_COL_NAME, QHeaderView.ResizeMode.Stretch)
-        for col in LAYER_DETAIL_COLUMNS:
+        for col in (*LAYER_DETAIL_COLUMNS, LAYER_COL_EDIT):
             header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
         self.layersTable.verticalHeader().setVisible(False)
 
@@ -372,6 +406,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         # refresh instead of resetting everything back to "all checked".
         had_items = self.layersTable.rowCount() > 0
         previously_checked = self._checked_layer_ids()
+        previously_editable = self._editable_layer_ids()
 
         # itemChanged (wired to update_selection_state) would otherwise fire
         # once per cell while the table is being rebuilt below.
@@ -398,9 +433,21 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         # order — project.mapLayers() gives no ordering guarantee at all.
         layers.sort(key=lambda layer: tree_info.get(layer.id(), {}).get("order", 10**9))
 
+        # Layers that can't be published still get a row (greyed out, with the reason),
+        # so nobody wonders where their mesh or vector-tile layer went
+        skipped = sorted(
+            (
+                (layer, info)
+                for layer in project.mapLayers().values()
+                for info in [layer_export.unsupported_layer_info(layer.type())]
+                if info is not None
+            ),
+            key=lambda pair: tree_info.get(pair[0].id(), {}).get("order", 10**9),
+        )
+
         warning_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning)
 
-        self.layersTable.setRowCount(len(layers))
+        self.layersTable.setRowCount(len(layers) + len(skipped))
         for row, layer in enumerate(layers):
             group = tree_info.get(layer.id(), {}).get("group")
             name, type_text, features_text, crs_text, group_text, tooltip, has_warning = (
@@ -429,6 +476,39 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
                 cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 cell.setToolTip(tooltip)
                 self.layersTable.setItem(row, col, cell)
+
+            edit_cell = QTableWidgetItem()
+            if layer.type() == QgsMapLayer.LayerType.VectorLayer and layer.isSpatial():
+                edit_cell.setFlags((edit_cell.flags() | Qt.ItemFlag.ItemIsUserCheckable) & ~Qt.ItemFlag.ItemIsEditable)
+                edit_cell.setCheckState(
+                    Qt.CheckState.Checked if layer.id() in previously_editable else Qt.CheckState.Unchecked
+                )
+                edit_cell.setToolTip("Visitors of the web app can edit this layer on the map (with the editing password).")
+            else:
+                edit_cell.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.layersTable.setItem(row, LAYER_COL_EDIT, edit_cell)
+
+        for offset, (layer, (kind, reason)) in enumerate(skipped):
+            row = len(layers) + offset
+            group = tree_info.get(layer.id(), {}).get("group")
+            for col, text in (
+                (LAYER_COL_NAME, layer.name()),
+                (LAYER_COL_TYPE, f"{kind} (not supported)"),
+                (LAYER_COL_FEATURES, "—"),
+                (LAYER_COL_CRS, "—"),
+                (LAYER_COL_GROUP, group or "—"),
+            ):
+                cell = QTableWidgetItem(text)
+                # Enabled text but neither checkable nor selectable: it can't be picked
+                cell.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                cell.setForeground(self.layersTable.palette().color(self.layersTable.palette().ColorGroup.Disabled, self.layersTable.palette().ColorRole.Text))
+                cell.setToolTip(reason)
+                if col == LAYER_COL_NAME:
+                    cell.setIcon(warning_icon)
+                self.layersTable.setItem(row, col, cell)
+            blank = QTableWidgetItem()
+            blank.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.layersTable.setItem(row, LAYER_COL_EDIT, blank)
 
         self.layersTable.blockSignals(False)
         self.update_selection_state()
@@ -519,6 +599,8 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             if group:
                 tooltip_parts.append(f"Group: {group}")
             tooltip_parts.extend(issues)
+            if descriptor.popup_problem:
+                tooltip_parts.append(descriptor.popup_problem)
             return (
                 layer.name(), geom, f"{count:,}", crs, group_text,
                 "\n".join(tooltip_parts), bool(issues),
@@ -568,6 +650,26 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             layer.name(), kind_label, "—", "—", group_text,
             "\n".join(tooltip_parts), has_warning,
         )
+
+    def _editable_layer_ids(self):
+        """Ids of the layers whose Editable box is checked (the web app lets people edit them)."""
+        ids = set()
+        for row in range(self.layersTable.rowCount()):
+            cell = self.layersTable.item(row, LAYER_COL_EDIT)
+            name = self.layersTable.item(row, LAYER_COL_NAME)
+            if cell is not None and name is not None and cell.checkState() == Qt.CheckState.Checked:
+                ids.add(name.data(Qt.ItemDataRole.UserRole))
+        return ids
+
+    def _restore_editable_layers(self, layer_ids):
+        wanted = set(layer_ids or [])
+        for row in range(self.layersTable.rowCount()):
+            cell = self.layersTable.item(row, LAYER_COL_EDIT)
+            name = self.layersTable.item(row, LAYER_COL_NAME)
+            if cell is not None and name is not None and bool(cell.flags() & Qt.ItemFlag.ItemIsUserCheckable):
+                cell.setCheckState(
+                    Qt.CheckState.Checked if name.data(Qt.ItemDataRole.UserRole) in wanted else Qt.CheckState.Unchecked
+                )
 
     def _checked_layer_ids(self):
         return {
@@ -1173,6 +1275,130 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             self.deployWidget.setCurrentIndex(DEPLOY_PAGE_AWS)
         self._shrink_stacked_widget_to_current_page(self.deployWidget)
 
+    def _build_aws_credentials_ui(self):
+        """How to sign in to AWS: access keys (which can be remembered in the QGIS password
+        manager) or a named AWS profile. Built in code, inside the credentials box."""
+        settings = QgsSettings()
+        self.awsAuthModeCombo = QComboBox()
+        self.awsAuthModeCombo.addItem("Access keys", credentials.AUTH_MODE_KEYS)
+        self.awsAuthModeCombo.addItem("AWS profile (from ~/.aws)", credentials.AUTH_MODE_PROFILE)
+        self.awsProfileCombo = QComboBox()
+        self.awsProfileCombo.setEditable(True)
+        self.awsProfileCombo.addItems(credentials.aws_profile_names())
+        self.awsProfileCombo.setToolTip(
+            "A profile of the AWS CLI (aws configure / aws sso login): no keys to paste here."
+        )
+        self.awsRememberCheck = QCheckBox("Remember the keys in the QGIS password manager")
+        self.awsRememberCheck.setToolTip(
+            "Stored encrypted by QGIS (it asks for its master password). They are never written "
+            "to the project or to a file."
+        )
+
+        form = self.awsCredentialsFormLayout
+        form.insertRow(1, "Sign in with", self.awsAuthModeCombo)
+        form.insertRow(2, "AWS profile", self.awsProfileCombo)
+        form.insertRow(5, "", self.awsRememberCheck)  # below the secret key
+
+        mode = settings.value("GISPublisher/awsAuthMode", credentials.AUTH_MODE_KEYS)
+        self.awsAuthModeCombo.setCurrentIndex(max(self.awsAuthModeCombo.findData(mode), 0))
+        saved_profile = settings.value("GISPublisher/awsProfile", "")
+        if saved_profile:
+            self.awsProfileCombo.setCurrentText(str(saved_profile))
+        self.awsRememberCheck.setChecked(str(settings.value(credentials.REMEMBER_SETTING, "false")).lower() == "true")
+
+        self.awsAuthModeCombo.currentIndexChanged.connect(self._update_aws_auth_mode)
+        self.awsRememberCheck.toggled.connect(self._update_aws_auth_mode)
+        self._update_aws_auth_mode()
+
+    def _set_form_row_visible(self, widget, visible):
+        label = self.awsCredentialsFormLayout.labelForField(widget)
+        widget.setVisible(visible)
+        if label is not None:
+            label.setVisible(visible)
+
+    def _update_aws_auth_mode(self, *_):
+        profile_mode = self.awsAuthModeCombo.currentData() == credentials.AUTH_MODE_PROFILE
+        for widget in (self.awsAccessKeyEdit, self.awsSecretAccessKeyEdit, self.awsRememberCheck):
+            self._set_form_row_visible(widget, not profile_mode)
+        self._set_form_row_visible(self.awsProfileCombo, profile_mode)
+
+        saved = not profile_mode and self.awsRememberCheck.isChecked() and credentials.default_key_store().has_saved()
+        hint = "Saved in the password manager" if saved else ""
+        self.awsAccessKeyEdit.setPlaceholderText(hint)
+        self.awsSecretAccessKeyEdit.setPlaceholderText(hint)
+
+        settings = QgsSettings()
+        settings.setValue("GISPublisher/awsAuthMode", self.awsAuthModeCombo.currentData())
+        settings.setValue(credentials.REMEMBER_SETTING, "true" if self.awsRememberCheck.isChecked() else "false")
+
+    def _aws_keys_saved(self):
+        """Whether the keys will come from the password manager (nothing typed, and saved)."""
+        return (
+            self.awsAuthModeCombo.currentData() == credentials.AUTH_MODE_KEYS
+            and self.awsRememberCheck.isChecked()
+            and not self.awsAccessKeyEdit.text().strip()
+            and not self.awsSecretAccessKeyEdit.text().strip()
+            and credentials.default_key_store().has_saved()
+        )
+
+    def _resolve_aws_credentials(self, fields):
+        """The AWS fields with their keys filled in from, or saved to, the password manager
+        as the "remember" box says. ``None`` when the keys cannot be had (the user was told)."""
+        if fields.get("auth_mode") == credentials.AUTH_MODE_PROFILE:
+            QgsSettings().setValue("GISPublisher/awsProfile", fields.get("profile", ""))
+            return fields
+
+        store = credentials.default_key_store()
+        typed = fields.get("access_key", "").strip() and fields.get("secret_key", "").strip()
+        if not self.awsRememberCheck.isChecked():
+            if store.has_saved():
+                store.forget()
+            return fields
+        if typed:
+            if not store.save(fields["access_key"].strip(), fields["secret_key"].strip()):
+                QMessageBox.warning(
+                    self, "Password manager",
+                    "The keys could not be saved in the QGIS password manager (it stayed locked). "
+                    "They are used for this run only.",
+                )
+            return fields
+        loaded = store.load()
+        if loaded is None:
+            QMessageBox.warning(
+                self, "Saved keys not available",
+                "The saved AWS keys could not be read from the QGIS password manager. "
+                "Unlock it, or type the keys again.",
+            )
+            return None
+        return dict(fields, access_key=loaded[0], secret_key=loaded[1])
+
+    def _deployment_path(self, app_name):
+        """Where the app's deployment lives (see _deployment_dir), without creating it."""
+        return os.path.join(QgsApplication.qgisSettingsDirPath(), "GISPublisher", "deployments", app_name)
+
+    def _refresh_update_data_check(self, *_):
+        """"Update data only" needs an app deployed from here (its generated product is
+        the reference for what may change) on a target that can do it (local or ssh)."""
+        name = self.appNameEdit.text().strip()
+        app_name = naming.docker_safe_app_name(name) if name else ""
+        deployed = bool(app_name) and os.path.isfile(
+            os.path.join(self._deployment_path(app_name), "output", ".gp-deploy-state.json")
+        )
+        target_ok = not self.radioAWS.isChecked()
+        self.updateDataCheck.setEnabled(deployed and target_ok)
+        if not (deployed and target_ok):
+            self.updateDataCheck.setChecked(False)
+        if not target_ok:
+            reason = "Not available for AWS: give the instance's address in an SSH deployment instead."
+        elif not deployed:
+            reason = "Deploy the app once from here first."
+        else:
+            reason = (
+                "Loads the layers whose data changed into the running app. Only works when the layers and "
+                "their fields are the same as in the last deployment; styles, labels and popups need a full Deploy."
+            )
+        self.updateDataCheck.setToolTip(reason)
+
     def current_deploy_type(self):
         if self.radioLocal.isChecked():
             return "local"
@@ -1202,9 +1428,8 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             missing.extend(label for widget, label in required if not self._field_text(widget).strip())
 
         elif deploy_type == "aws":
+            missing.extend(credentials.missing_aws_credentials(self.collect_deploy_fields()[1], self._aws_keys_saved()))
             required = [
-                (self.awsAccessKeyEdit, "Access key"),
-                (self.awsSecretAccessKeyEdit, "Secret key"),
                 (self.awsRegionEdit, "Region"),
                 (self.awsAmiIdEdit, "AMI ID"),
                 (self.awsInstanceTypeEdit, "Instance type"),
@@ -1234,6 +1459,8 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             }
         else:
             fields = {
+                "auth_mode": self.awsAuthModeCombo.currentData(),
+                "profile": self.awsProfileCombo.currentText(),
                 "access_key": self.awsAccessKeyEdit.text(),
                 "secret_key": self.awsSecretAccessKeyEdit.text(),
                 "region": self.awsRegionEdit.currentText(),
@@ -1288,16 +1515,28 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         access_key = self.awsAccessKeyEdit.text().strip()
         secret_key = self.awsSecretAccessKeyEdit.text().strip()
         region = self.awsRegionEdit.currentText().strip()
-        if not access_key or not secret_key:
+        profile = (
+            self.awsProfileCombo.currentText().strip()
+            if self.awsAuthModeCombo.currentData() == credentials.AUTH_MODE_PROFILE else ""
+        )
+        if profile:
+            pass
+        elif self._aws_keys_saved():
+            loaded = credentials.default_key_store().load()
+            if loaded is None:
+                QMessageBox.warning(self, "Saved keys not available", "The saved AWS keys could not be read.")
+                return
+            access_key, secret_key = loaded
+        elif not access_key or not secret_key:
             QMessageBox.warning(
                 self, "Missing information",
-                "Fill in Access key and Secret key before testing credentials.",
+                "Fill in Access key and Secret key (or choose an AWS profile) before testing credentials.",
             )
             return
 
         self.awsTestCredentialsButton.setEnabled(False)
         self.awsTestCredentialsButton.setText("Testing…")
-        self._aws_test_thread = AwsTestThread(access_key, secret_key, region)
+        self._aws_test_thread = AwsTestThread(access_key, secret_key, region, profile)
         self._aws_test_thread.result.connect(self._on_aws_test_result)
         self._aws_test_thread.start()
 
@@ -1401,6 +1640,8 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             "output_dir": self.output_dir or "",
             "action": "deploy" if self.radioDeploy.isChecked() else "generate",
             "deploy_type": self.current_deploy_type(),
+            "web_options": self.webOptionsGroup.settings(),
+            "editable_layer_ids": sorted(self._editable_layer_ids()),
         }
         state_store.save_project_selection(project, selection)
 
@@ -1438,6 +1679,8 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
 
         self.processingCrsEdit.setText(selection.get("processing_crs", ""))
         self.useProjectCrsCheck.setChecked(bool(selection.get("use_project_crs")))
+        self.webOptionsGroup.set_settings(selection.get("web_options"))
+        self._restore_editable_layers(selection.get("editable_layer_ids"))
         if selection["model_folder"] and os.path.isdir(selection["model_folder"]):
             self.selected_model_folder = selection["model_folder"]
             self.modelFolderPathLabel.setText(self.selected_model_folder)
@@ -1700,6 +1943,11 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         if not self._validate_app_name():
             return
 
+        web_problem = self.webOptionsGroup.problem()
+        if web_problem:
+            QMessageBox.warning(self, "Web app options", web_problem)
+            return
+
         self.save_current_selection()
 
         if self.radioGenerate.isChecked():
@@ -1750,7 +1998,8 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             target_line = f"Action: Generate → {self.output_dir or '(no output folder selected)'}"
         else:
             target_kind = "Local" if self.radioLocal.isChecked() else "SSH" if self.radioSSH.isChecked() else "AWS"
-            target_line = f"Action: Deploy ({target_kind})"
+            update = " — update the data only" if self.updateDataCheck.isChecked() else ""
+            target_line = f"Action: Deploy ({target_kind}){update}"
 
         lines = [
             f"App name: {self.appNameEdit.text().strip() or '(empty)'}  v{self.appVersionEdit.text().strip()}",
@@ -1837,7 +2086,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         os.makedirs(path, exist_ok=True)
         return path
 
-    def _create_runner(self, selected_layers, output_dir):
+    def _create_runner(self, selected_layers, output_dir, extra_env=None):
         return GISPublisherRunner(
             layers=selected_layers,
             output_dir=output_dir,
@@ -1846,6 +2095,9 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             model_entries=self.get_selected_model_entries(),
             processing_crs=self.processing_crs_override() or None,
             use_project_crs=self.useProjectCrsCheck.isChecked(),
+            web_settings=self.webOptionsGroup.settings(),
+            editable_layer_ids=self._editable_layer_ids(),
+            extra_env=extra_env,
             parent=self.job_manager,
             debug=self.DEBUG,
         )
@@ -1857,7 +2109,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         def on_finished(job):
             self._remove_config_file(config_path)
             # Where the app answers when the CLI said so, else what the form had
-            host = (job.url or record.get("host", "")) if kind == "deploy" else ""
+            host = (job.url or record.get("host", "")) if kind in ("deploy", "update") else ""
             state_store.append_run_record(
                 exit_code=job.exit_code if job.exit_code is not None else -1,
                 duration_seconds=job.duration,
@@ -1932,6 +2184,10 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         if problem:
             QMessageBox.warning(self, "Invalid deploy settings", problem)
             return
+        if deploy_type == "aws":
+            fields = self._resolve_aws_credentials(fields)
+            if fields is None:
+                return
 
         # docker_safe_app_name, not the raw field: see its docstring for why a
         # DSL-valid name can still break every server-to-GeoServer call.
@@ -1946,6 +2202,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             config_path = build_deploy_config(
                 deploy_type, fields, name=name, version=version, dest_dir=deployment_dir,
                 gispublisher_root=self._gispublisher_root,
+                overwrite_edited=self.webOptionsGroup.overwriteEditsCheck.isChecked(),
             )
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
@@ -1957,13 +2214,14 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
                 os.environ["PATH"] += os.pathsep + docker_bin
 
         output_dir = os.path.join(deployment_dir, "output")
-        runner = self._create_runner(selected_layers, output_dir)
+        update_data = self.updateDataCheck.isChecked() and self.updateDataCheck.isEnabled()
+        runner = self._create_runner(selected_layers, output_dir, extra_env=credentials.deploy_environment(deploy_type, fields))
         record = dict(
             run_type="deploy", deploy_type=deploy_type, deploy_fields=fields, output_dir=output_dir,
             host=fields.get("host", ""), **self._run_counts(selected_layers),
         )
         self._start_job(
-            runner, "deploy", name, self._TARGET_LABELS.get(deploy_type, deploy_type),
-            dict(config_path=config_path, gispub_path=self._gispub_path),
+            runner, "update" if update_data else "deploy", name, self._TARGET_LABELS.get(deploy_type, deploy_type),
+            dict(config_path=config_path, gispub_path=self._gispub_path, update_data=update_data),
             config_path, record,
         )

@@ -72,7 +72,9 @@ def deploy_problem(deploy_type, fields):
     return remote_path_problem(remote_path)
 
 
-def build_deploy_config(deploy_type, fields, name="test", version="1.0.0", dest_dir=None, gispublisher_root=None):
+def build_deploy_config(
+    deploy_type, fields, name="test", version="1.0.0", dest_dir=None, gispublisher_root=None, overwrite_edited=False
+):
     """Write a temporary GISPublisher config JSON and return its path.
 
     `fields` holds the plain string/int values collected from the deploy form
@@ -128,10 +130,10 @@ def build_deploy_config(deploy_type, fields, name="test", version="1.0.0", dest_
         }
     elif deploy_type == "aws":
         deploy_section = {
+            # The access keys are deliberately not here: they reach the CLI as
+            # environment variables (core.credentials.deploy_environment)
             "deploy": {
                 "type": "aws",
-                "AWS_ACCESS_KEY_ID": fields["access_key"],
-                "AWS_SECRET_ACCESS_KEY": fields["secret_key"],
                 "AWS_REGION": fields["region"],
                 "AWS_AMI_ID": fields["ami_id"],
                 "AWS_INSTANCE_TYPE": fields["instance_type"],
@@ -146,13 +148,17 @@ def build_deploy_config(deploy_type, fields, name="test", version="1.0.0", dest_
     else:
         raise ValueError(f"Unknown deployment type: {deploy_type}")
 
+    # A redeploy keeps what people changed in the web app, unless told to replace it
+    if overwrite_edited:
+        deploy_section["deploy"] = {**deploy_section["deploy"], "overwriteEditedLayers": True}
+
     final_json = {**base_json, **deploy_section}
 
-    # AWS/SSH deploy_section can carry real credentials (AWS_SECRET_ACCESS_KEY,
-    # key/cert paths) — mkstemp (not NamedTemporaryFile, which this used to
-    # reopen by path via a second open() call, leaking its own file handle)
-    # gives us the fd to chmod before anything is written to it, rather than
-    # relying on the platform default and hoping it's restrictive enough.
+    # The deploy section can still name key files and hosts — mkstemp (not
+    # NamedTemporaryFile, which this used to reopen by path via a second open() call,
+    # leaking its own file handle) gives us the fd to chmod before anything is written
+    # to it, rather than relying on the platform default and hoping it's restrictive
+    # enough.
     fd, path = tempfile.mkstemp(suffix=".json", dir=dest_dir)
     if sys.platform != "win32":
         os.chmod(path, 0o600)

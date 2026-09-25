@@ -151,5 +151,17 @@ class ExplainTests(unittest.TestCase):
         self.assertEqual(deploy_errors.last_error_line([]), "")
 
 
+class EditAccountTests(unittest.TestCase):
+    def test_result_carries_the_editing_account(self):
+        progress = dp.DeployProgress()
+        progress.apply({"event": "result", "url": "u", "outputDir": "/o", "editUser": "editor", "editPassword": "pw123"})
+        self.assertEqual((progress.edit_user, progress.edit_password), ("editor", "pw123"))
+
+    def test_a_result_without_one_leaves_it_empty(self):
+        progress = dp.DeployProgress()
+        progress.apply({"event": "result", "url": "u", "outputDir": "/o"})
+        self.assertEqual((progress.edit_user, progress.edit_password), ("", ""))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,9 +1,9 @@
 import dataclasses, json, os, re, subprocess, sys, tempfile, pathlib, shutil, time
-from qgis.PyQt.QtCore import QObject, QProcess, pyqtSignal
+from qgis.PyQt.QtCore import QObject, QProcess, QProcessEnvironment, pyqtSignal
 from qgis.PyQt.QtWidgets import QApplication
 from qgis.core import QgsMapLayer, QgsProject
 from ..core.dependencies_checker import check_node_gispublisher
-from ..core import deploy_progress, layer_export, model_discovery, naming, project_manifest, shapefile_io
+from ..core import deploy_progress, layer_export, model_discovery, naming, project_manifest, shapefile_io, web_options
 
 # Staging dirs created under the OS temp dir per run; never cleaned up automatically
 # by the OS, so the plugin sweeps stale ones on its own (see cleanup_old_temp_dirs).
@@ -95,7 +95,7 @@ class GISPublisherRunner(QObject):
     # Steps this class reports itself, before the CLI's own
     LOCAL_STEPS = (("export", "Export layers"), ("stage", "Stage charts & models"))
 
-    def __init__(self, layers, output_dir, parent=None, chart_folder=None, chart_items=None, model_entries=None, debug=False, target_crs=layer_export.DEFAULT_TARGET_CRS, processing_crs=None, use_project_crs=False):
+    def __init__(self, layers, output_dir, parent=None, chart_folder=None, chart_items=None, model_entries=None, debug=False, target_crs=layer_export.DEFAULT_TARGET_CRS, processing_crs=None, use_project_crs=False, web_settings=None, extra_env=None, editable_layer_ids=None):
         super().__init__(parent)
         self.layers = layers
         self.output_dir = output_dir
@@ -104,6 +104,12 @@ class GISPublisherRunner(QObject):
         self.processing_crs = processing_crs
         # Ask gispublisher to build the web map in the QGIS project's CRS.
         self.use_project_crs = use_project_crs
+        # What the user chose about the app itself (see core.web_options), or None
+        self.web_settings = web_settings
+        # Layers the web app lets its visitors edit on the map (QGIS layer ids)
+        self.editable_layer_ids = set(editable_layer_ids or [])
+        # Environment variables for the CLI process only (credentials: never on disk)
+        self.extra_env = dict(extra_env or {})
         self.chart_folder = chart_folder
         # None means "include everything in the folder"; a list restricts to those names.
         self.chart_items = chart_items
@@ -267,11 +273,17 @@ class GISPublisherRunner(QObject):
             # exists in the staged file.
             manifest_descriptor = dataclasses.replace(
                 descriptor,
-                field_aliases=project_manifest.remap_field_aliases(descriptor.field_aliases, plan.rename_map),
+                field_aliases=project_manifest.remap_field_keys(descriptor.field_aliases, plan.rename_map),
+                field_info=project_manifest.remap_field_keys(descriptor.field_info, plan.rename_map),
+                display_field=(plan.rename_map or {}).get(descriptor.display_field, descriptor.display_field),
+                temporal={k: (plan.rename_map or {}).get(v, v) for k, v in descriptor.temporal.items()},
             )
-            self.manifest_layer_entries.append(project_manifest.build_layer_entry(
+            entry = project_manifest.build_layer_entry(
                 manifest_descriptor, plan.staged_basename, tree_info.get(layer.id())
-            ))
+            )
+            if layer.id() in self.editable_layer_ids:
+                entry["editable"] = True
+            self.manifest_layer_entries.append(entry)
 
             field_names = list(descriptor.field_names)
             staged_dbf = os.path.join(dest_dir, plan.staged_basename + ".dbf")
@@ -405,6 +417,7 @@ class GISPublisherRunner(QObject):
                 project_info["extentProjected"] = project_manifest.extent_in_project_crs(project_info["extent"])
             if self.processing_crs:
                 project_info["processingCrs"] = self.processing_crs
+            project_info.update(web_options.project_info_extras(self.web_settings, self.temp_dir))
             manifest = project_manifest.build_manifest(
                 project_info, self.manifest_layer_entries, self.group_dir_by_name
             )
@@ -419,13 +432,16 @@ class GISPublisherRunner(QObject):
         self.log_lines.append(line)
         self.logLine.emit(line)
 
-    def start(self, generate=False, config_path=None, gispub_path=None):
+    def start(self, generate=False, config_path=None, gispub_path=None, update_data=False):
         """`gispub_path`, if given, skips check_node_gispublisher()'s own
         find_node()/find_gispublisher() lookup (which can itself spawn a
         blocking npm subprocess) — callers that already resolved it via a
         requirements check (e.g. qgispublisher_dialog's self._gispub_path)
         should always pass it. It's only re-resolved here as a fallback for
         callers that haven't (e.g. tests driving the runner directly).
+
+        `update_data` (a deploy of an app that is already running): the CLI loads the new
+        data into it without generating or rebuilding anything.
 
         Staging runs here, synchronously, on the caller's (GUI) thread — QGIS
         layers can only be read there — repainting between layers. The CLI itself
@@ -489,6 +505,8 @@ class GISPublisherRunner(QObject):
             args.append("--config")
             args.append(config_path.name)
             working_dir = str(config_path.parent)
+            if update_data:
+                args.append("--update-data")
         # Structured progress; a CLI that predates the flag ignores it and the UI
         # falls back to the plain log (see DeployProgress.cli_reported).
         args.extend(["--progress", "json"])
@@ -519,6 +537,11 @@ class GISPublisherRunner(QObject):
         self.process = QProcess(self)
         self.process.setProgram(gispub_path)
         self.process.setArguments(args)
+        if self.extra_env:
+            environment = QProcessEnvironment.systemEnvironment()
+            for name, value in self.extra_env.items():
+                environment.insert(name, value)
+            self.process.setProcessEnvironment(environment)
 
         if working_dir:
             self.process.setWorkingDirectory(working_dir)

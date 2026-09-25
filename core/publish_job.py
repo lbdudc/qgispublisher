@@ -36,7 +36,7 @@ class PublishJob:
 
     def __init__(self, runner, kind, title, target, on_finished=None):
         self.runner = runner
-        self.kind = kind  # "generate" | "deploy"
+        self.kind = kind  # "generate" | "deploy" | "update" (the data of a deployed app only)
         self.title = title  # app name
         self.target = target  # "Local Docker", "SSH server", ...
         self.on_finished = on_finished
@@ -57,7 +57,7 @@ class PublishJob:
 
     @property
     def verb(self):
-        return "Deploying" if self.kind == "deploy" else "Generating"
+        return {"deploy": "Deploying", "update": "Updating the data of"}.get(self.kind, "Generating")
 
     @property
     def headline(self):
@@ -71,6 +71,13 @@ class PublishJob:
     @property
     def url(self):
         return self.progress.url or self.runner.resulting_host
+
+    @property
+    def edit_account(self):
+        """``(user, password)`` of the app's editing account, or None when it has none."""
+        if self.progress.edit_user and self.progress.edit_password:
+            return self.progress.edit_user, self.progress.edit_password
+        return None
 
     @property
     def output_dir(self):
@@ -333,7 +340,8 @@ class PublishJobManager(QObject):
             return
 
         if job.ok:
-            text = f"{job.title}: {'deployed' if job.kind == 'deploy' else 'generated'} successfully."
+            done = {"deploy": "deployed", "update": "data updated"}.get(job.kind, "generated")
+            text = f"{job.title}: {done} successfully."
             if job.warnings:
                 text += f" {len(job.warnings)} layer(s) were not published."
             level = _level("Warning") if job.warnings else _level("Success")

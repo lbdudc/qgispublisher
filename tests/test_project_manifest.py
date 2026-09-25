@@ -92,11 +92,67 @@ class BuildLayerEntryTests(unittest.TestCase):
             [{"name": "nom", "alias": "Name"}, {"name": "pob", "alias": "Population"}],
         )
 
+    def test_field_info_carries_more_than_the_alias(self):
+        descriptor = _vector_descriptor()
+        descriptor = layer_export.LayerDescriptor(**{
+            **descriptor.__dict__,
+            "field_info": {
+                "nom": {"alias": "Name"},
+                "code": {"hidden": True, "valueMap": {"1": "Urban"}},
+                "empty": {},
+            },
+        })
+        entry = project_manifest.build_layer_entry(descriptor, "roads")
+        self.assertEqual(
+            entry["fields"],
+            [
+                {"name": "nom", "alias": "Name"},
+                {"name": "code", "hidden": True, "valueMap": {"1": "Urban"}},
+            ],
+        )
+
     def test_raster_descriptor_works_the_same_way(self):
         entry = project_manifest.build_layer_entry(_raster_descriptor(), "ortho")
         self.assertEqual(entry["staged"], "ortho")
         self.assertEqual(entry["title"], "Ortho")
         self.assertNotIn("fields", entry)
+
+
+class DisplayFieldTests(unittest.TestCase):
+    FIELDS = ["fid", "nombre", 'weird "name"']
+
+    def test_a_plain_field_reference_is_the_display_field(self):
+        f = layer_export.display_field_from_expression
+        self.assertEqual(f('"nombre"', self.FIELDS), "nombre")
+        self.assertEqual(f("  nombre ", self.FIELDS), "nombre")
+        self.assertEqual(f('"weird ""name"""', self.FIELDS), 'weird "name"')
+
+    def test_real_expressions_and_unknown_fields_are_not(self):
+        f = layer_export.display_field_from_expression
+        for expression in ('"nombre" || ' ' || "fid"', "upper(nombre)", '"nope"', "", None):
+            self.assertEqual(f(expression, self.FIELDS), "", expression)
+
+    def test_the_manifest_entry_carries_it(self):
+        descriptor = layer_export.LayerDescriptor(
+            layer_id="id1", name="Roads", source="/data/roads.shp", crs_authid="EPSG:4326",
+            feature_count=1, field_names=("nombre",), display_field="nombre",
+        )
+        self.assertEqual(project_manifest.build_layer_entry(descriptor, "roads")["displayField"], "nombre")
+        self.assertNotIn("displayField", project_manifest.build_layer_entry(_vector_descriptor(), "roads"))
+
+
+class RemapFieldKeysTests(unittest.TestCase):
+    def test_values_are_kept_and_keys_follow_the_rename(self):
+        info = {"1er Apelli": {"alias": "Primer apellido", "hidden": True}, "nombre": {}}
+        rename_map = {"1er Apelli": "f1erApelli"}
+        self.assertEqual(
+            project_manifest.remap_field_keys(info, rename_map),
+            {"f1erApelli": {"alias": "Primer apellido", "hidden": True}, "nombre": {}},
+        )
+
+    def test_empty_rename_map_is_noop(self):
+        info = {"a": {"alias": "A"}}
+        self.assertEqual(project_manifest.remap_field_keys(info, {}), info)
 
 
 class RemapFieldAliasesTests(unittest.TestCase):
@@ -204,6 +260,28 @@ class BookmarkAndCrsTests(unittest.TestCase):
 
     def test_crs_info_without_authid_is_none(self):
         self.assertIsNone(project_manifest.build_crs_info("", False, "+proj=x"))
+
+
+class GroupPathTests(unittest.TestCase):
+    def test_top_level_group_is_just_its_name(self):
+        self.assertEqual(project_manifest.join_group_path(None, "Roads"), "Roads")
+
+    def test_nested_group_keeps_the_full_path(self):
+        self.assertEqual(project_manifest.join_group_path("Admin", "Roads"), "Admin / Roads")
+        self.assertEqual(
+            project_manifest.join_group_path(project_manifest.join_group_path("A", "B"), "C"), "A / B / C"
+        )
+
+    def test_same_named_subgroups_get_different_folders(self):
+        from core import naming
+
+        dirs = naming.assign_group_dirnames(["Admin / Roads", "Water / Roads"])
+        self.assertEqual(len(set(dirs.values())), 2)
+
+    def test_a_group_named_branding_does_not_take_the_logo_folder(self):
+        from core import naming
+
+        self.assertNotEqual(naming.assign_group_dirnames(["Branding"])["Branding"].lower(), "branding")
 
 
 if __name__ == "__main__":

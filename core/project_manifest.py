@@ -86,11 +86,29 @@ def build_layer_entry(descriptor, staged_basename, tree_entry=None):
     # visibility off) should never be confused with an explicit falsy value
     # like "visible": false.
     entry = {k: v for k, v in raw.items() if v is not None}
-    field_aliases = getattr(descriptor, "field_aliases", None)
-    if field_aliases:
-        entry["fields"] = [
-            {"name": name, "alias": alias} for name, alias in field_aliases.items()
-        ]
+    field_info = getattr(descriptor, "field_info", None)
+    if not field_info:
+        # A descriptor that only knows aliases (the pre-field_info shape)
+        field_info = {
+            name: {"alias": alias}
+            for name, alias in (getattr(descriptor, "field_aliases", None) or {}).items()
+        }
+    fields = [
+        {"name": name, **{k: v for k, v in info.items() if v is not None}}
+        for name, info in field_info.items()
+        if info
+    ]
+    if fields:
+        entry["fields"] = fields
+    display_field = getattr(descriptor, "display_field", "")
+    if display_field:
+        entry["displayField"] = display_field
+    temporal = getattr(descriptor, "temporal", None)
+    if temporal:
+        entry["temporal"] = dict(temporal)
+    popup_template = getattr(descriptor, "popup_template", "")
+    if popup_template:
+        entry["popup"] = {"template": popup_template}
     return entry
 
 
@@ -160,12 +178,17 @@ def remap_field_aliases(field_aliases, rename_map):
     absent from ``rename_map`` (the common case — most fields need no DBF-safe
     rename at all) keeps its original name unchanged.
     """
+    return remap_field_keys(field_aliases, rename_map)
+
+
+def remap_field_keys(by_field, rename_map):
+    """Any mapping keyed by the *original* QGIS field name (aliases, ``field_info``)
+    re-keyed through ``rename_map``, so it matches the staged DBF's field names.
+    Values are left as they are.
+    """
     if not rename_map:
-        return field_aliases
-    return {
-        rename_map.get(name, name): alias
-        for name, alias in field_aliases.items()
-    }
+        return by_field
+    return {rename_map.get(name, name): value for name, value in by_field.items()}
 
 
 def write_manifest(temp_dir, manifest):
@@ -308,6 +331,16 @@ def _extent_to_wgs84_dict(extent, source_crs):
         return None
 
 
+GROUP_PATH_SEPARATOR = " / "
+
+
+def join_group_path(parent, name):
+    """The name of a nested QGIS group: ``"Parent / Child"`` (just ``name`` at the top
+    level). The full path, so two subgroups called the same in different groups stay
+    apart, and the generated map is titled by where the group is."""
+    return f"{parent}{GROUP_PATH_SEPARATOR}{name}" if parent else name
+
+
 def describe_layer_tree(root):
     """Walk ``root`` (``QgsProject.instance().layerTreeRoot()``) depth-first,
     in the same top-to-bottom order the Layers panel shows, and return
@@ -315,12 +348,9 @@ def describe_layer_tree(root):
 
     ``order`` is a plain 0-based position counter over every layer in the
     tree (not per-group), matching what "layer order" means to a QGIS user
-    scanning the panel top to bottom. ``group`` is the immediate parent
-    ``QgsLayerTreeGroup``'s name, or ``None`` for a layer sitting directly
-    under the root (no group) — a full group *path* isn't tracked since
-    nothing downstream needs more than the immediate group yet (see
-    Workstream 3d in the plan, which stages one subfolder per top-level
-    group instead of consuming this field for grouping).
+    scanning the panel top to bottom. ``group`` is the parent
+    ``QgsLayerTreeGroup``'s full path (``join_group_path``: ``"Parent / Child"``
+    for a nested one), or ``None`` for a layer sitting directly under the root.
     """
     from qgis.core import QgsLayerTreeGroup, QgsLayerTreeLayer
 
@@ -330,7 +360,7 @@ def describe_layer_tree(root):
     def _walk(node, group_name):
         for child in node.children():
             if isinstance(child, QgsLayerTreeGroup):
-                _walk(child, child.name())
+                _walk(child, join_group_path(group_name, child.name()))
             elif isinstance(child, QgsLayerTreeLayer):
                 info[child.layerId()] = {
                     "order": counter["n"],

@@ -76,8 +76,9 @@ def test_ssh_connection(host, port, username, cert_path):
     return False, f"Reachable, but authentication failed: {detail}"
 
 
-def test_aws_credentials(access_key, secret_key, region):
-    """Check AWS deploy credentials via `aws sts get-caller-identity`.
+def test_aws_credentials(access_key, secret_key, region, profile=None):
+    """Check AWS deploy credentials via `aws sts get-caller-identity` (with `profile`, the
+    named AWS profile instead of the keys).
     Returns (ok, message) — returns (True, ...) with a caveat rather than
     (False, ...) when the `aws` CLI itself isn't installed, since that's not
     a credential problem and shouldn't read as one.
@@ -87,8 +88,11 @@ def test_aws_credentials(access_key, secret_key, region):
         return True, "AWS CLI not found on PATH — install it to enable credential testing before deploying."
 
     env = os.environ.copy()
-    env["AWS_ACCESS_KEY_ID"] = access_key
-    env["AWS_SECRET_ACCESS_KEY"] = secret_key
+    if profile:
+        env["AWS_PROFILE"] = profile
+    else:
+        env["AWS_ACCESS_KEY_ID"] = access_key
+        env["AWS_SECRET_ACCESS_KEY"] = secret_key
     env["AWS_DEFAULT_REGION"] = region or "us-east-1"
 
     try:
