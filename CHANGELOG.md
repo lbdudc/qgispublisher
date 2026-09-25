@@ -2,9 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.5.0] - 2026-09-25
 
 ### Added
+- **Complex QGIS styles reach the app.** Each layer's symbology is prepared before its SLD is exported, so what QGIS's exporter cannot carry no longer leaves the layer with no style (or, for some, drawing nothing): nested `ELSE` rules, gradient fills, SVG and font markers, heatmaps, point clusters, inverted polygons and label expressions are approximated by the closest thing GeoServer draws, and the run log lists what was approximated (`[STYLE] <layer>: ...`). Hatch, dot-pattern and marker-line fills, all QGIS marker shapes, rule filters using `upper`/`lower`/`length`... and hillshade rasters now render too.
 - **"Web app" box** (main dialog): the app's title, logo, colour and basemap, and switches for the map search (with an optional OpenStreetMap place lookup), the legend and the data downloads. Saved per project.
 - **Popups like QGIS**: field aliases, hidden attribute-table columns, value-map labels and a simple map tip reach the generated app; the display field names the features in search results and lists.
 - **Editable layers** (new column in the Layers table): visitors of the app can add, move and delete that layer's features on the map with a generated editing password, shown when the deployment ends. A redeploy keeps their edits unless "A redeploy replaces the edits made in the web app" is on.
@@ -13,8 +14,20 @@ All notable changes to this project will be documented in this file.
 - **AWS sign-in by access keys or by an AWS profile**; keys can be remembered in the QGIS password manager and are passed to the CLI as environment variables instead of being written to a file.
 - Layers the plugin cannot publish (mesh, vector tile, point cloud) are listed greyed out with the reason instead of missing; nested QGIS groups keep their full path.
 
+### Changed
+- The map search is a magnifier button in the generated app's right-hand controls (it opens the field and its suggestions to the left of the buttons) instead of a bar above the map. *(mini-lps)*
+- A redeploy updates the styles already in GeoServer (they used to stay as first deployed) and republishes a layer left half-published by a failed deploy. *(mini-lps)*
+
+### Fixed
+- Histogram charts never rendered (Vega's `bin` needs an extent).
+- Charts on a field with an underscore in its name (`obs_date`) were empty: the app exposes `obsDate`.
+- Layer names with accents lost their accented letter in the generated app (`Árboles` became `rboles`), which broke their charts; names are now ASCII from the start.
+- Saved charts on a layer whose name does not end in "s" (`landuse`) requested a wrong URL. *(mini-lps)*
+- Heatmap legends did not show (two copies of `vega-scale` in the client). *(mini-lps)*
+- The generated map opened on the whole world when the project had an XYZ or WMS basemap and no saved view extent.
+
 ### Requires
-- `gispublisher` 1.7.0 or later.
+- `gispublisher` 1.7.1 or later (it brings mini-lps 0.6.1).
 
 ## [0.4.1] - 2026-09-24
 
