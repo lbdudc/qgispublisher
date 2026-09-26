@@ -11,6 +11,7 @@ documented in core/layer_export.py and used by the other test modules here.
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -68,6 +69,35 @@ class ShouldCheckForUpdateTests(unittest.TestCase):
     def test_custom_interval(self):
         self.assertFalse(deps.should_check_for_update(1_000_000, 1_000_030, interval_seconds=60))
         self.assertTrue(deps.should_check_for_update(1_000_000, 1_000_060, interval_seconds=60))
+
+
+class FindSshTests(unittest.TestCase):
+    """QGIS on Windows starts with a PATH that leaves out Windows' OpenSSH: the CLI could not run ssh."""
+
+    def test_found_on_path_is_left_alone(self):
+        with mock.patch.object(deps.shutil, "which", return_value="/usr/bin/ssh"), mock.patch.dict(
+            os.environ, {"PATH": "/usr/bin"}
+        ):
+            self.assertEqual(deps.find_ssh(), "/usr/bin/ssh")
+            self.assertEqual(os.environ["PATH"], "/usr/bin")
+
+    def test_missing_from_the_restricted_path_is_found_in_the_registry_path_and_added(self):
+        ssh = r"C:\Windows\System32\OpenSSH\ssh.exe"
+
+        def which(name, path=None):
+            return ssh if path and "OpenSSH" in path and name == "ssh.exe" else None
+
+        with mock.patch.object(deps.sys, "platform", "win32"), mock.patch.object(
+            deps.shutil, "which", side_effect=which
+        ), mock.patch.object(
+            deps, "_windows_full_path", return_value=r"C:\Windows\System32;C:\Windows\System32\OpenSSH"
+        ), mock.patch.dict(os.environ, {"PATH": r"C:\qgis\bin"}):
+            self.assertEqual(deps.find_ssh(), ssh)
+            self.assertIn(os.path.dirname(ssh), os.environ["PATH"])
+
+    def test_not_installed_anywhere(self):
+        with mock.patch.object(deps.sys, "platform", "linux"), mock.patch.object(deps.shutil, "which", return_value=None):
+            self.assertIsNone(deps.find_ssh())
 
 
 if __name__ == "__main__":

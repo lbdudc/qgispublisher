@@ -3,7 +3,7 @@ from qgis.PyQt.QtCore import QObject, QProcess, QProcessEnvironment, pyqtSignal
 from qgis.PyQt.QtWidgets import QApplication
 from qgis.core import QgsMapLayer, QgsProject
 from ..core.dependencies_checker import check_node_gispublisher
-from ..core import deploy_progress, layer_export, model_discovery, naming, project_manifest, shapefile_io, style_prep, web_options
+from ..core import deploy_progress, layer_export, live_layers, model_discovery, naming, project_manifest, shapefile_io, style_prep, web_options
 
 # Staging dirs created under the OS temp dir per run; never cleaned up automatically
 # by the OS, so the plugin sweeps stale ones on its own (see cleanup_old_temp_dirs).
@@ -38,6 +38,28 @@ def cleanup_old_temp_dirs():
                 shutil.rmtree(path, ignore_errors=True)
         except OSError:
             continue
+
+
+def _epsg_number(authid):
+    """4326 for "EPSG:4326", else None."""
+    head, _, tail = (authid or "").partition(":")
+    return int(tail) if head.upper() == "EPSG" and tail.isdigit() else None
+
+
+def _auth_credentials(source):
+    """(user, password) of the QGIS authentication configuration a source names (authcfg=...), or None."""
+    authcfg = live_layers.parse_source(source).get("authcfg")
+    if not authcfg:
+        return None
+    try:
+        from qgis.core import QgsApplication, QgsAuthMethodConfig
+        config = QgsAuthMethodConfig()
+        if QgsApplication.authManager().loadAuthenticationConfig(authcfg, config, True):
+            values = config.configMap()
+            return values.get("username", ""), values.get("password", "")
+    except Exception:
+        pass
+    return None
 
 
 def _export_sld(layer, dest_path):
@@ -95,7 +117,7 @@ class GISPublisherRunner(QObject):
     # Steps this class reports itself, before the CLI's own
     LOCAL_STEPS = (("export", "Export layers"), ("stage", "Stage charts & models"))
 
-    def __init__(self, layers, output_dir, parent=None, chart_folder=None, chart_items=None, model_entries=None, debug=False, target_crs=layer_export.DEFAULT_TARGET_CRS, processing_crs=None, use_project_crs=False, web_settings=None, extra_env=None, editable_layer_ids=None):
+    def __init__(self, layers, output_dir, parent=None, chart_folder=None, chart_items=None, model_entries=None, debug=False, target_crs=layer_export.DEFAULT_TARGET_CRS, processing_crs=None, use_project_crs=False, web_settings=None, extra_env=None, editable_layer_ids=None, live_layer_ids=None, deploy_type=None):
         super().__init__(parent)
         self.layers = layers
         self.output_dir = output_dir
@@ -108,6 +130,9 @@ class GISPublisherRunner(QObject):
         self.web_settings = web_settings
         # Layers the web app lets its visitors edit on the map (QGIS layer ids)
         self.editable_layer_ids = set(editable_layer_ids or [])
+        # Layers kept as a live PostGIS/WFS source instead of a copy (QGIS layer ids), and where the app goes
+        self.live_layer_ids = set(live_layer_ids or [])
+        self.deploy_type = deploy_type
         # Environment variables for the CLI process only (credentials: never on disk)
         self.extra_env = dict(extra_env or {})
         self.chart_folder = chart_folder
@@ -260,7 +285,15 @@ class GISPublisherRunner(QObject):
 
             plan = plan_by_id[layer.id()]
             dest_dir = self._dest_dir_for(layer, tree_info, group_dir_by_name)
-            ok, message = layer_export.export_layer(layer, plan, dest_dir, self.target_crs)
+            if layer.id() in self.live_layer_ids and self._stage_live_layer(layer, descriptor, plan, dest_dir, tree_info):
+                continue
+            # Labels that are an expression or rules cannot go through the SLD: QGIS works the text
+            # out and it is exported as one more (hidden) column that the labels are drawn from
+            label_plan = style_prep.plan_labels(layer)
+            export_source = style_prep.with_label_field(layer, label_plan) if label_plan else layer
+            if export_source is layer:
+                label_plan = None
+            ok, message = layer_export.export_layer(export_source, plan, dest_dir, self.target_crs)
             self.export_results.append((layer.name(), ok, message))
             if not ok:
                 continue
@@ -271,10 +304,19 @@ class GISPublisherRunner(QObject):
             # that also needed a DBF-safe rename must be re-keyed to match,
             # or gispublisher would look it up under a name that no longer
             # exists in the staged file.
+            field_info = project_manifest.remap_field_keys(descriptor.field_info, plan.rename_map)
+            if label_plan is not None:
+                # the label text column is for the map only: not in lists, forms, popups or downloads
+                field_info = {**field_info, style_prep.LABEL_FIELD: {"hidden": True, "internal": True}}
+                if layer.id() in self.editable_layer_ids:
+                    self.log_lines.append(
+                        f"[STYLE] {layer.name()}: the label text is worked out when publishing, so a feature added or "
+                        "changed in the web app keeps its old label (none, if new) until the next publish"
+                    )
             manifest_descriptor = dataclasses.replace(
                 descriptor,
                 field_aliases=project_manifest.remap_field_keys(descriptor.field_aliases, plan.rename_map),
-                field_info=project_manifest.remap_field_keys(descriptor.field_info, plan.rename_map),
+                field_info=field_info,
                 display_field=(plan.rename_map or {}).get(descriptor.display_field, descriptor.display_field),
                 temporal={k: (plan.rename_map or {}).get(v, v) for k, v in descriptor.temporal.items()},
             )
@@ -286,6 +328,8 @@ class GISPublisherRunner(QObject):
             self.manifest_layer_entries.append(entry)
 
             field_names = list(descriptor.field_names)
+            if label_plan is not None:
+                field_names.append(style_prep.LABEL_FIELD)  # the DBF has that one column more
             staged_dbf = os.path.join(dest_dir, plan.staged_basename + ".dbf")
             if plan.rename_map and os.path.isfile(staged_dbf):
                 shapefile_io.rewrite_dbf_field_names(staged_dbf, field_names, plan.rename_map)
@@ -293,7 +337,7 @@ class GISPublisherRunner(QObject):
             dest_sld = os.path.join(dest_dir, plan.staged_basename + ".sld")
             # What QGIS's SLD export cannot carry (a heatmap, a gradient fill, a nested ELSE
             # rule, a label expression...) is approximated on a copy of the layer first
-            style_layer, style_notes = style_prep.prepare_vector_layer(layer)
+            style_layer, style_notes = style_prep.prepare_vector_layer(export_source, label_plan)
             sld_ok, sld_message = _export_sld(style_layer, dest_sld)
             self.sld_results.append((layer.name(), sld_ok, sld_message))
             for note in style_notes:
@@ -371,6 +415,45 @@ class GISPublisherRunner(QObject):
             sidecar_file = wms_file + ".json"
             with open(sidecar_file, "w", encoding="utf-8") as f:
                 json.dump(wms_requests, f)
+
+    def _stage_live_layer(self, layer, descriptor, plan, dest_dir, tree_info):
+        """Stage `layer` as a live source (sidecar + style, no data). False when it cannot be one:
+        the caller then exports it as a copy like any other layer, after a warning."""
+        provider = layer.providerType() if hasattr(layer, "providerType") else ""
+        sidecar, reason = live_layers.build_sidecar(
+            provider, layer.source(), srid=_epsg_number(descriptor.crs_authid) or 4326,
+            credentials=_auth_credentials(layer.source()),
+        )
+        if sidecar is None:
+            self.log_lines.append(f"[WARN] {layer.name()}: not kept live, it is copied instead: {reason}")
+            return False
+        try:
+            with open(os.path.join(dest_dir, plan.staged_basename + ".live.json"), "w", encoding="utf-8") as f:
+                json.dump(sidecar, f)
+        except OSError as e:
+            self.export_results.append((layer.name(), False, str(e)))
+            return True
+        self.export_results.append((layer.name(), True, ""))
+        for warning in live_layers.live_warnings(layer.name(), sidecar, self.deploy_type):
+            self.log_lines.append(f"[WARN] {warning}")
+        style_layer, style_notes = style_prep.prepare_vector_layer(layer, None)
+        dest_sld = os.path.join(dest_dir, plan.staged_basename + ".sld")
+        sld_ok, sld_message = _export_sld(style_layer, dest_sld)
+        self.sld_results.append((layer.name(), sld_ok, sld_message))
+        for note in style_notes:
+            self.log_lines.append(f"[STYLE] {layer.name()}: {note}")
+        if sld_ok:
+            shapefile_io.rewrite_unsupported_marks(dest_sld)
+            shapefile_io.clamp_graphic_margins(dest_sld)
+            shapefile_io.rename_sld_functions(dest_sld)
+        entry = project_manifest.build_layer_entry(descriptor, plan.staged_basename, tree_info.get(layer.id()))
+        entry["fields"] = [f for f in entry.get("fields", []) if not f.get("hidden")]
+        self.manifest_layer_entries.append(entry)
+        self.log_lines.append(
+            f"[INFO] {layer.name()}: kept live ({sidecar['kind']}): drawn by the app's map server from the source; "
+            "no list, search, download or editing for it, and a label written as an expression is not applied."
+        )
+        return True
 
     def copy_chart_folder(self):
         if self.chart_folder and os.path.exists(self.chart_folder):

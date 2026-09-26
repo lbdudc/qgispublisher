@@ -73,6 +73,11 @@ class PublishJob:
         return self.progress.url or self.runner.resulting_host
 
     @property
+    def zip_file(self):
+        """The zip a generate run made, or ""."""
+        return self.progress.zip_file
+
+    @property
     def edit_account(self):
         """``(user, password)`` of the app's editing account, or None when it has none."""
         if self.progress.edit_user and self.progress.edit_password:
@@ -352,7 +357,14 @@ class PublishJobManager(QObject):
         item = bar.createMessage("GISPublisher", text)
         if job.ok and job.url:
             item.layout().addWidget(self._button("Open app", lambda: QDesktopServices.openUrl(QUrl(job.url))))
-        if job.ok and job.output_dir and os.path.isdir(job.output_dir):
+        if job.ok and job.zip_file and os.path.isfile(job.zip_file):
+            item.layout().addWidget(
+                self._button(
+                    "Open folder",
+                    lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(job.zip_file))),
+                )
+            )
+        elif job.ok and job.output_dir and os.path.isdir(job.output_dir):
             item.layout().addWidget(
                 self._button("Open folder", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(job.output_dir)))
             )

@@ -31,8 +31,21 @@ NOTE_SVG = "SVG symbols are drawn as plain shapes of the same colour (GeoServer 
 NOTE_FONT = "font markers are drawn as plain marks (GeoServer does not have the QGIS fonts)"
 NOTE_SYMBOL_LAYER = "a {kind} symbol layer is drawn as a plain symbol of the same colour"
 NOTE_DATA_DEFINED = "data-defined symbol properties ({props}) are not published; the base symbol is used"
-NOTE_LABEL_EXPRESSION = "the label expression is not supported; the layer is published without labels"
+NOTE_LABEL_EXPRESSION = "the label expression could not be evaluated; the layer is published without labels"
 NOTE_LABEL_KIND = "{kind} labelling is not supported; the layer is published without labels"
+NOTE_LABEL_COMPUTED = (
+    "the labels are computed by QGIS (the expression is evaluated for every feature) and published "
+    "as the hidden column gp_label"
+)
+NOTE_LABEL_RULES = (
+    "rule-based labels: the text of the first matching rule is published, all drawn with the style "
+    "of the first rule (per-rule fonts, colours and scale ranges are not kept)"
+)
+
+# The hidden text column that carries computed label text to the generated app (a shapefile
+# field name: at most 10 characters, lowercase, like the names the app gives its columns)
+LABEL_FIELD = "gp_label"
+LABEL_FIELD_LENGTH = 254
 
 
 # Font characters people commonly use as map symbols -> the nearest simple marker shape
@@ -41,6 +54,58 @@ FONT_CHAR_SHAPES = {
     "□": "Square", "◆": "Diamond", "♦": "Diamond", "✚": "Cross", "✖": "Cross2",
     "+": "Cross", "x": "Cross2", "X": "Cross2",
 }
+
+
+def quote_field(name):
+    """A field name as it is written in a QGIS expression.
+
+    >>> quote_field('name')
+    '"name"'
+    >>> quote_field('a"b')
+    '"a""b"'
+    """
+    return '"' + name.replace('"', '""') + '"'
+
+
+def label_case_expression(rules):
+    """One expression for the text of a rule-based labelling: the text of the first rule
+    whose filter holds. ``rules`` is ``[(filter, text_expression)]`` in the order QGIS
+    draws them; a rule without a filter (or ``ELSE``) matches everything left, so the
+    rules after it can never be reached. ``None`` for no rules.
+
+    >>> label_case_expression([('"pop" > 100', '"name"'), ('', '"code"')])
+    'CASE WHEN ("pop" > 100) THEN ("name") ELSE ("code") END'
+    >>> label_case_expression([('', '"name"')])
+    '"name"'
+    >>> label_case_expression([]) is None
+    True
+    """
+    branches = []
+    fallback = None
+    for flt, text in rules:
+        flt = (flt or "").strip()
+        if not flt or flt.upper() == "ELSE":
+            fallback = text
+            break
+        branches.append(f"WHEN ({flt}) THEN ({text})")
+    if not branches:
+        return fallback
+    tail = f" ELSE ({fallback})" if fallback else ""
+    return "CASE " + " ".join(branches) + tail + " END"
+
+
+def combine_filters(parent, child):
+    """The filter of a nested rule: both its own and its parent's.
+
+    >>> combine_filters('"a" = 1', '"b" = 2')
+    '("a" = 1) AND ("b" = 2)'
+    >>> combine_filters('', '"b" = 2')
+    '"b" = 2'
+    """
+    parent, child = (parent or "").strip(), (child or "").strip()
+    if parent and child:
+        return f"({parent}) AND ({child})"
+    return parent or child
 
 
 def negated_siblings(filters):
@@ -63,18 +128,111 @@ def mix_hex(color_a, color_b, weight=0.5):
 
 # ------------------------------------------------------------------ QGIS-touching part
 
-def prepare_vector_layer(layer):
+class LabelPlan:
+    """What a layer's labels need that QGIS's SLD export cannot carry: the expression that
+    gives each feature's label text (published as the ``gp_label`` column), the settings
+    (font, halo, placement...) to draw it with, and notes for the run log."""
+
+    def __init__(self, expression, settings, notes):
+        self.expression = expression
+        self.settings = settings
+        self.notes = notes
+
+
+def plan_labels(layer):
+    """A `LabelPlan` when the layer's labels are an expression or rule-based, else ``None``
+    (no labels, or plain field labels, which the SLD carries as they are). Never raises."""
+    try:
+        return _plan_labels(layer)
+    except Exception:  # nosec B110 - labels are a nicety, the layer is published without them
+        return None
+
+
+def _text_expression(settings):
+    return settings.fieldName if settings.isExpression else quote_field(settings.fieldName)
+
+
+def _plan_labels(layer):
+    from qgis.core import QgsExpression
+
+    labeling = layer.labeling()
+    if labeling is None or not layer.labelsEnabled():
+        return None
+    kind = labeling.type()
+
+    if kind == "simple":
+        settings = labeling.settings()
+        if not settings.isExpression or not settings.fieldName:
+            return None
+        expr = QgsExpression(settings.fieldName)
+        if expr.hasParserError() or expr.isField():
+            return None  # a field written as an expression: reduced to the field, see _prepare_labeling
+        return LabelPlan(settings.fieldName, settings, [NOTE_LABEL_COMPUTED])
+
+    if kind == "rule-based":
+        rules = []
+
+        def walk(rule, inherited):
+            flt = combine_filters(inherited, rule.filterExpression())
+            settings = rule.settings()
+            if settings is not None and rule.active() and settings.fieldName:
+                rules.append((flt, _text_expression(settings), settings))
+            for child in rule.children():
+                if child.active():
+                    walk(child, flt)
+
+        walk(labeling.rootRule(), "")
+        if not rules:
+            return None
+        expression = label_case_expression([(f, t) for f, t, _s in rules])
+        if QgsExpression(expression).hasParserError():
+            return None
+        notes = [NOTE_LABEL_COMPUTED] + ([NOTE_LABEL_RULES] if len(rules) > 1 else [])
+        return LabelPlan(expression, rules[0][2], notes)
+
+    return None
+
+
+def with_label_field(layer, plan):
+    """A copy of ``layer`` with the labels' text as an extra (virtual) text field
+    ``gp_label``: what gets exported and styled. The project's own layer is not touched.
+    Returns ``layer`` itself, unchanged, if the field cannot be added."""
+    from qgis.core import QgsField
+
+    try:
+        clone = layer.clone()
+        if not clone.addExpressionField(plan.expression, QgsField(LABEL_FIELD, _string_type(), "", LABEL_FIELD_LENGTH)):
+            return layer
+        return clone
+    except Exception:  # nosec B110 - the layer is then published without those labels
+        return layer
+
+
+def _string_type():
+    """The 'text' field type in whatever form this QGIS/Qt takes it (Qt 5 and Qt 6)."""
+    from qgis.PyQt.QtCore import QMetaType, QVariant
+
+    try:
+        return QMetaType.Type.QString
+    except AttributeError:
+        return QVariant.String
+
+
+def prepare_vector_layer(layer, label_plan=None):
     """``(layer_to_export, notes)``: a copy of ``layer`` whose renderer/labelling SLD can
     carry, and what was approximated (each note is one sentence). Never raises: on any
     failure the original layer is returned so the old behaviour (whatever QGIS exports)
-    stays the floor."""
+    stays the floor.
+
+    ``label_plan`` (see `plan_labels`) says the labels are drawn from the ``gp_label``
+    field of ``layer`` (which `with_label_field` added)."""
     notes = []
     try:
         clone = layer.clone()
         renderer = _prepare_renderer(clone, notes)
         if renderer is not None:
             clone.setRenderer(renderer)
-        _prepare_labeling(clone, notes)
+        _prepare_labeling(clone, notes, label_plan)
         return clone, notes
     except Exception as e:  # nosec B110 - best-effort, see docstring
         return layer, [f"style preparation failed ({e}); QGIS's own export is used"]
@@ -248,13 +406,23 @@ def _stand_in(symbol, sl, kind, notes, seen):
     return QgsSimpleMarkerSymbolLayer(QgsSimpleMarkerSymbolLayer.Circle, 3, 0, color)
 
 
-def _prepare_labeling(layer, notes):
+def _prepare_labeling(layer, notes, label_plan=None):
     """Simple labels on a field export as a TextSymbolizer; an expression that is only a
-    field is reduced to it, anything richer (or rule-based labelling) is dropped."""
-    from qgis.core import QgsExpression
+    field is reduced to it. Labels that need computing (an expression, rules) are drawn
+    from the ``gp_label`` field with the settings they had (``label_plan``); anything else
+    is dropped."""
+    from qgis.core import QgsExpression, QgsPalLayerSettings, QgsVectorLayerSimpleLabeling
 
     labeling = layer.labeling()
     if labeling is None or not layer.labelsEnabled():
+        return
+    if label_plan is not None:
+        settings = QgsPalLayerSettings(label_plan.settings)
+        settings.fieldName = LABEL_FIELD
+        settings.isExpression = False
+        layer.setLabeling(QgsVectorLayerSimpleLabeling(settings))
+        layer.setLabelsEnabled(True)
+        notes.extend(label_plan.notes)
         return
     kind = labeling.type()
     if kind != "simple":

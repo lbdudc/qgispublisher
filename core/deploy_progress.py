@@ -72,6 +72,8 @@ class DeployProgress:
     services: list = field(default_factory=list)
     url: str = ""
     output_dir: str = ""
+    # A generate run that made a zip has no URL: the zip it wrote
+    zip_file: str = ""
     # The account that lets people change data in the deployed app (set only when the app
     # has editable layers); it is shown to the user, never logged or saved in the history
     edit_user: str = ""
@@ -134,6 +136,7 @@ class DeployProgress:
         if kind == "result":
             self.url = event.get("url") or ""
             self.output_dir = event.get("outputDir") or ""
+            self.zip_file = event.get("file") or ""
             self.edit_user = event.get("editUser") or ""
             self.edit_password = event.get("editPassword") or ""
             return True

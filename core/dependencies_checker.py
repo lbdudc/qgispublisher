@@ -9,7 +9,7 @@ import shutil
 # gispublisher/mini-lps/gisdsl change the plugin depends on is published, so an
 # out-of-date CLI is flagged rather than failing (or silently misbehaving) deep
 # inside the generation run.
-REQUIRED_CLI_VERSION = "1.7.1"
+REQUIRED_CLI_VERSION = "1.8.0"
 
 
 def _windows_full_path():
@@ -45,6 +45,25 @@ def check_node_gispublisher():
         raise Exception(node_result["message"])
     gispub_path = find_gispublisher()
     return gispub_path
+
+
+def find_ssh():
+    """Locate the `ssh` client and make sure the CLI that the plugin starts can find it too.
+
+    A deployment over ssh runs `ssh` and `scp` from the gispublisher CLI. QGIS on Windows starts with a
+    restricted PATH that leaves out Windows' own OpenSSH (C:\\Windows\\System32\\OpenSSH), so, like
+    find_node(), retry with the PATH of the Windows registry and add the folder to this process's PATH.
+    Returns the path of `ssh`, or None.
+    """
+    ssh = shutil.which("ssh") or shutil.which("ssh.exe")
+    if not ssh and sys.platform == "win32":
+        win_path = _windows_full_path()
+        ssh = shutil.which("ssh.exe", path=win_path) or shutil.which("ssh", path=win_path)
+    if ssh:
+        ssh_dir = os.path.dirname(ssh)
+        if ssh_dir.lower() not in os.environ.get("PATH", "").lower():
+            os.environ["PATH"] += os.pathsep + ssh_dir
+    return ssh
 
 
 def find_node():

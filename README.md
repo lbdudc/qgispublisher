@@ -51,16 +51,39 @@ Alternatively, extract the zip contents into your QGIS plugins directory:
 
 1. Open QGIS and locate the **GISPublisher** icon in the toolbar.
 2. Click the icon to launch the plugin. A window opens with a compact status line at the top (hover it for details on Node.js/GISPublisher detection; a small refresh button rechecks, and an "Install GISPublisher" button appears only if it's missing), then a two-pane layout below it:
-   - On the left, a tabbed panel switches between **Layers**, **Charts** and **Models**:
+   - On the left, a tabbed panel switches between **Layers**, **Charts**, **Models** and **Web app**:
      - **Layers** — choose which layers from your current QGIS project to include (all are selected by default; use "Select all" to toggle everything).
      - **Charts** (optional) — click **New chart…** to build one from a layer's fields with a live preview, or select a folder of hand-authored **Vega**/**Vega-Lite** chart definitions; once selected, its contents appear as a checkable list so you can include or exclude individual files. See [Data Visualizations with Vega](#data-visualizations-with-vega).
+     - **Web app** — how the generated app looks (title, logo, colour, basemap) and what it offers (map search, address search, legend, data downloads, and whether a redeploy replaces the edits made in the app).
      - **Models** (optional) — geoprocessing models saved in the current project or in your QGIS profile are listed automatically as a checkable list; use the refresh button if you've just saved a new one. **Add folder…** appends models from an extra folder (e.g. shared on a network drive). See [Geoprocessing Models](#geoprocessing-models).
-   - On the right, the **Action** panel: choose **Generate** or **Deploy**. Generate shows an output folder picker; Deploy shows the Local/SSH/AWS configuration described in [Deploying your application](#deploying-your-application), plus a **History** section — see [Deployment history](#deployment-history).
+   - On the right, the **Action** panel: choose **Generate** or **Deploy**. Generate shows an output folder picker and a checkbox to also save the app as a zip; Deploy shows the Local/SSH/AWS/Hetzner Cloud/DigitalOcean configuration described in [Deploying your application](#deploying-your-application), plus a **History** section — see [Deployment history](#deployment-history).
    - Drag the divider between the two panes to resize them.
 3. Click **Run** at the bottom of the window to start the selected action. Your layer/chart/model selections and output folder are remembered per-project — see [Saved selections](#saved-selections).
 4. A progress window opens listing the run as steps (export layers, generate the app, check Docker, build & start services, wait for services…), each with its status and duration, and the state of every service while the app starts. Tick **Show details** for the underlying GISPublisher/Docker output (remembered for next time).
    - **Run in background** hides the window and the run continues: it appears in the QGIS task manager (bottom status bar, where it can also be cancelled), and a message-bar notification tells you when it ends, with **Open app** / **Details** buttons. Click **Show progress…** on the main window to bring the window back. One run at a time.
    - When it finishes, the window shows the result: the app's URL (**Open app**, **Copy link**) or a plain-language reason for the failure (Docker not running, port already in use, SSH authentication failed…) with a hint, plus the full log.
+
+## Labels and styles
+
+The generated map is drawn by GeoServer from each layer's QGIS style, so what you set in QGIS is what the map shows. Labels:
+
+- **A field as the label** is published as it is, with its font, size, colour, halo and placement.
+- **A label expression** (for example `concat("name", '\n', round("pop" / 1000), 'k')`) and **rule-based labels** are worked out by QGIS for every feature while publishing and stored in a hidden text column (`gp_label`) that the labels are drawn from. The column is not shown in the app's lists, forms, popups or downloads.
+  - With rule-based labels, each feature gets the text of the first rule whose filter matches, and all are drawn with the style of the first rule (per-rule fonts, colours and scale ranges are not kept).
+  - The text is fixed when you publish: a feature added or changed in the web app (an *Editable* layer) keeps its old label, or has none if it is new, until the next publish.
+- Other label kinds (blocking, obstacles) are not published. The run log lists what was approximated (`[STYLE] <layer>: ...`).
+
+GeoServer draws the map in tiles, so a label of a large polygon can appear once per tile.
+
+## Live PostGIS and WFS layers
+
+Tick **Live** on a PostGIS or WFS layer (the column is in the layer list) to publish it *without copying its data*: the app's map server (GeoServer) connects to the source and draws it with the layer's QGIS style, so the map follows the source, with nothing to republish when the data changes.
+
+- A live layer is **map only**: no list, search, popup-from-table, download or editing (it does still show its legend and identify popup from the server). A label written as an expression is not applied.
+- The source's login is kept in the app's server configuration, never in the pages people download; a login that lives in the QGIS authentication database is read from there.
+- The source must be reachable **from the machine that runs the app**. On *Local*/*Generate* a source on this computer (`localhost`) is reached as `host.docker.internal`, so the database has to accept connections from Docker. When deploying to another machine, a source on this computer or a private network cannot be reached: the run log says so (`[WARN]`).
+- A PostGIS layer must be a plain table (no filter, no query layer, no PostgreSQL service file); otherwise it is copied like any other layer, and the log says why.
+- The sidecar behind it (`<name>.live.json`) can also be written by hand for `gispublisher` on the command line, see its README.
 
 ## Data Visualizations with Vega
 
@@ -93,9 +116,15 @@ Before a run, the plugin checks each checked model and warns (in the model's too
 - vector inputs no published layer can satisfy (for example a polygon input with only point layers published);
 - fixed distances, such as a 2000-unit buffer: the app stores and processes data in EPSG:4326, so unless the QGIS project itself uses a projected CRS the number is read as degrees. With a projected project CRS, models run in that CRS instead.
 
+## Generate as a zip
+
+**Generate** writes the app into the output folder you choose. With **Also save it as a zip (with a README and start scripts)** checked (it is not by default), it also writes `<app name>-<version>.zip` there: the app, a `README.md` and `start.sh` / `start.ps1`, so that whoever gets it can start the app on any machine with Docker, with HTTPS if they give it a domain (`./start.sh --domain gis.example.org`). Use it to hand the app to an IT team, or to run it on a server you set up yourself. The app made for a zip has its own random passwords, so keep the zip private.
+
 ## Deploying your application
 
-Selecting **Deploy** in the Action section lets you configure one of three deployment targets before clicking **Run**. All secret fields (AWS Secret Access Key) are masked, and any local file path field (private key, SSH key) has a folder-icon button to browse for the file instead of typing the path. Hover any field for a description of what it expects, and see the links next to the AWS fields for where to find those values in the AWS Console.
+Selecting **Deploy** in the Action section lets you configure one of five deployment targets (Local, SSH, AWS, Hetzner Cloud, DigitalOcean) before clicking **Run**. All secret fields (AWS Secret Access Key) are masked, and any local file path field (private key, SSH key) has a folder-icon button to browse for the file instead of typing the path. Hover any field for a description of what it expects, and see the links next to the AWS fields for where to find those values in the AWS Console.
+
+A line under the target buttons always says what the run will do and where the app will end up (for example *Deploys to ubuntu@203.0.113.5 over SSH, into /home/ubuntu/app. The app will be at https://gis.example.org.*), with warnings in amber: no domain means plain HTTP, and editable layers over plain HTTP send the editing password unencrypted. **Copy as a gispublisher command** puts the equivalent command line on the clipboard, to run the same deployment from a terminal or a script (AWS keys are not included: the command reads them from the environment).
 
 ### Local
 
@@ -118,6 +147,10 @@ Deploys to a remote server you control over SSH.
 | Username | SSH username |
 | Port | SSH port (default `22`) |
 | Remote repository path | Absolute path on the remote server to deploy into |
+| Domain (optional) | A name that points at the server, e.g. `gis.example.org`: the app is then served over **HTTPS** with a free Let's Encrypt certificate (ports 80 and 443 must be open). Empty: plain HTTP at the server's address |
+| Email for the certificate (optional) | Where Let's Encrypt sends expiry notices |
+
+An `ssh` client (OpenSSH) must be installed on this computer; on Windows it is an optional feature (*Settings > System > Optional features > OpenSSH Client*). If a layer is editable and there is no domain, the plugin warns that the editing password would travel unencrypted.
 
 ### AWS
 
@@ -134,6 +167,21 @@ Provisions and deploys to a new AWS EC2 instance.
 | Key pair | Name of an existing EC2 key pair |
 | SSH username / SSH key path | Credentials used to connect to the instance after it boots |
 | Remote repository path | Absolute path on the instance to deploy into |
+| Domain / Email (optional) | As for SSH. With a domain, the security group must open ports 80 and 443 (checked before the instance is created); the domain can only point at the instance after it exists, so the certificate is issued once you point the name at it |
+
+### Hetzner Cloud and DigitalOcean
+
+Rent a server at the provider on the first deploy and deploy to it (Ubuntu, Docker installed for you, a firewall for ports 22, 80 and 443). Later deploys find the server again by its name, so the data stays. **Not tried yet against the real services** (they need an account with a payment method); the page says so.
+
+| Field | Description |
+|-------|-------------|
+| API token | A token with write access (where to create it is written on the page). Masked; **Test token** asks the provider's API if it accepts it. It goes to the CLI as `HCLOUD_TOKEN` / `DIGITALOCEAN_TOKEN`, never into a file. *Remember the token* keeps it in the QGIS password manager |
+| Name | The server's name; a server with that name is reused |
+| Size / Region | Presets (at least 4 GB: the build needs it), and you can type any other size or region of the provider |
+| SSH key | Your private key; its `.pub` half is added to your account and lets you in as `root` |
+| Domain / Email (optional) | As for SSH; the name can only point at the server once it exists |
+
+Update data only is not offered for these targets (use SSH with the server's address for that).
 
 All fields are required for the selected deployment type; the plugin validates them before running and lists anything missing. The remote path must be an absolute folder at least two levels deep (for example `/home/ubuntu/app`): **it is emptied on every deploy**.
 

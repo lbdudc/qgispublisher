@@ -263,6 +263,10 @@ def normalize_diacritics(text):
 _LAYERNAME_URI_RE = re.compile(r"[?&|]layername=([^|&]+)", re.IGNORECASE)
 
 
+_KEY_VALUE_URI_RE = re.compile(r"\s*[A-Za-z_]+=")
+_TABLE_URI_RE = re.compile(r'table=(?:"[^"]*"\.)?"([^"]+)"')
+
+
 def preferred_basename_from_source(name, source):
     """Pure core of ``layer_source_basename`` — takes the layer's plain name/source
     strings instead of a QGIS layer object, so callers building a
@@ -281,6 +285,10 @@ def preferred_basename_from_source(name, source):
         m = _LAYERNAME_URI_RE.search(source)
         if m:
             return urllib.parse.unquote(m.group(1))
+        if _KEY_VALUE_URI_RE.match(source):
+            # A database/service source (`dbname=... table="public"."roads" (geom)`, `url=...`) is no path
+            table = _TABLE_URI_RE.search(source)
+            return table.group(1) if table else name
         path = source.split("|")[0].split("?")[0]
         basename = os.path.splitext(os.path.basename(path))[0]
         return basename or name

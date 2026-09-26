@@ -83,6 +83,39 @@ class BuildDeployConfigTests(unittest.TestCase):
         )
         self.assertEqual(data["host"], "1.2.3.4")
 
+    def test_ssh_domain_and_email_reach_the_config_only_when_given(self):
+        fields = {
+            "host": "1.2.3.4", "port": 22, "username": "deploy",
+            "cert_route": "/keys/id_rsa", "remote_repo_path": "/srv/app",
+        }
+        _, plain = self._build("ssh", fields)
+        self.assertNotIn("domain", plain["deploy"])
+        self.assertNotIn("acmeEmail", plain["deploy"])
+
+        _, https = self._build("ssh", {**fields, "domain": " gis.example.org ", "acme_email": "me@example.org"})
+        self.assertEqual(https["deploy"]["domain"], "gis.example.org")
+        self.assertEqual(https["deploy"]["acmeEmail"], "me@example.org")
+
+        # an email without a domain means nothing: no HTTPS, no certificate
+        _, only_email = self._build("ssh", {**fields, "acme_email": "me@example.org"})
+        self.assertNotIn("acmeEmail", only_email["deploy"])
+
+    def test_aws_domain_reaches_the_config(self):
+        fields = {
+            "region": "eu-west-1", "ami_id": "ami-1", "instance_type": "t3.micro", "instance_name": "n",
+            "security_group": "sg-1", "key_name": "k", "username": "ubuntu", "ssh_key_path": "/k.pem",
+            "remote_path": "/srv/app", "domain": "gis.example.org",
+        }
+        _, data = self._build("aws", fields)
+        self.assertEqual(data["deploy"]["domain"], "gis.example.org")
+
+    def test_generate_can_also_zip(self):
+        _, plain = self._build("local", {}, name="a", version="1.0.0")
+        self.assertNotIn("zip", plain)
+        _, zipped = self._build("local", {}, name="a", version="1.0.0", zip_output=True)
+        self.assertIs(zipped["zip"], True)
+        self.assertEqual(zipped["deploy"], {"type": "local"})
+
     def test_aws_fields_mapped(self):
         fields = {
             "access_key": "AKIA...", "secret_key": "shh", "region": "eu-west-1",
@@ -176,6 +209,110 @@ class DeployProblemTests(unittest.TestCase):
     def test_host_must_not_be_a_url(self):
         for bad in ["http://1.2.3.4", "1.2.3.4/app", "my host"]:
             self.assertIn("not a URL", deploy_config.deploy_problem("ssh", self.ssh(host=bad)), bad)
+
+    def test_domain_and_email_are_checked(self):
+        for good in ["gis.example.org", "a-b.example.co.uk", "gp.localhost"]:
+            self.assertIsNone(deploy_config.deploy_problem("ssh", self.ssh(domain=good)), good)
+        self.assertIsNone(deploy_config.deploy_problem("ssh", self.ssh(domain="")))
+        for bad in ["https://gis.example.org", "gis.example.org/app", "no_dots", "bad domain.org", "-x.example.org"]:
+            self.assertIn("domain must be", deploy_config.deploy_problem("ssh", self.ssh(domain=bad)), bad)
+        self.assertIn(
+            "email",
+            deploy_config.deploy_problem("ssh", self.ssh(domain="gis.example.org", acme_email="nope")),
+        )
+        self.assertIsNone(
+            deploy_config.deploy_problem("ssh", self.ssh(domain="gis.example.org", acme_email="me@example.org"))
+        )
+        self.assertIsNotNone(deploy_config.deploy_problem("aws", {"remote_path": "/srv/app", "domain": "x y"}))
+
+    def test_editing_over_plain_http_from_another_machine_is_flagged(self):
+        warn = deploy_config.plain_http_editing_warning
+        self.assertIn("plain HTTP", warn("ssh", self.ssh(), True))
+        self.assertIn("plain HTTP", warn("aws", {}, True))
+        self.assertIsNone(warn("ssh", self.ssh(), False))
+        self.assertIsNone(warn("local", {}, True))
+        self.assertIsNone(warn("ssh", self.ssh(domain="gis.example.org"), True))
+        self.assertIn("plain HTTP", warn("ssh", self.ssh(domain="  "), True))
+
+    def test_app_url(self):
+        url = deploy_config.app_url
+        self.assertEqual(url("ssh", {"host": "1.2.3.4"}), "http://1.2.3.4")
+        self.assertEqual(url("ssh", {"host": "1.2.3.4", "domain": " gis.example.org "}), "https://gis.example.org")
+        self.assertEqual(url("aws", {"domain": "gis.example.org"}), "https://gis.example.org")
+        self.assertIsNone(url("aws", {}))
+        self.assertIsNone(url("ssh", {}))
+        self.assertEqual(url("local", {}), "http://localhost:80")
+        self.assertEqual(url("local", {"host": "http://localhost:8080"}), "http://localhost:8080")
+        self.assertIsNone(url("package", {"file": "/x.zip"}))
+
+    def test_summary_says_what_will_happen_and_where_the_app_will_be(self):
+        lines, warnings = deploy_config.deploy_summary(
+            "ssh",
+            {"host": "203.0.113.5", "username": "ubuntu", "remote_repo_path": "/home/ubuntu/app", "domain": "gis.example.org"},
+        )
+        text = " ".join(lines)
+        self.assertIn("Deploys to ubuntu@203.0.113.5 over SSH, into /home/ubuntu/app.", text)
+        self.assertIn("https://gis.example.org", text)
+        self.assertIn("Point gis.example.org at 203.0.113.5", text)
+        self.assertEqual(warnings, [])
+
+    def test_summary_warns_about_plain_http_and_editing(self):
+        _, warnings = deploy_config.deploy_summary("ssh", {"host": "1.2.3.4"})
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("plain HTTP", warnings[0])
+        _, warnings = deploy_config.deploy_summary("ssh", {"host": "1.2.3.4"}, has_editable_layers=True)
+        self.assertEqual(len(warnings), 2)
+        self.assertTrue(any("editing password" in w for w in warnings))
+        # with a domain, or on this computer, nothing to warn about
+        self.assertEqual(deploy_config.deploy_summary("ssh", {"host": "h", "domain": "gis.example.org"}, True)[1], [])
+        self.assertEqual(deploy_config.deploy_summary("local", {}, True)[1], [])
+
+    def test_summary_leaves_out_what_is_not_filled_in_yet(self):
+        lines, _ = deploy_config.deploy_summary("ssh", {})
+        self.assertEqual(lines[0], "Deploys to the server over SSH.")
+        lines, _ = deploy_config.deploy_summary("aws", {})
+        self.assertIn("Creates an EC2 instance and deploys to it.", lines[0])
+        self.assertIn("once it exists", " ".join(lines))
+        lines, _ = deploy_config.deploy_summary("aws", {"instance_type": "t3.medium", "region": "eu-west-1", "domain": "gis.example.org"})
+        self.assertIn("(t3.medium, eu-west-1)", lines[0])
+        self.assertIn("https://gis.example.org", " ".join(lines))
+
+    def test_cli_command_for_an_ssh_deploy(self):
+        command = deploy_config.cli_command(
+            "ssh",
+            {"host": "203.0.113.5", "port": 22, "username": "ubuntu", "cert_route": "C:\\keys\\my key.pem",
+             "remote_repo_path": "/home/ubuntu/app", "domain": "gis.example.org", "acme_email": "me@example.org"},
+            name="demo", version="2.0.0", folder="C:/data/layers",
+        )
+        self.assertEqual(
+            command,
+            'gispublisher C:/data/layers --name demo --app-version 2.0.0 --type ssh --host 203.0.113.5 '
+            '--user ubuntu --key "C:\\keys\\my key.pem" --remote-path /home/ubuntu/app '
+            '--domain gis.example.org --acme-email me@example.org',
+        )
+
+    def test_cli_command_leaves_out_defaults_and_secrets(self):
+        command = deploy_config.cli_command(
+            "aws",
+            {"access_key": "AKIA", "secret_key": "shh", "region": "eu-west-1", "ami_id": "ami-1", "instance_type": "t3.micro",
+             "instance_name": "n", "security_group": "sg-1", "key_name": "k", "username": "ubuntu",
+             "ssh_key_path": "/k.pem", "remote_path": "/home/ubuntu/app", "domain": "", "acme_email": "x@y.zz"},
+        )
+        self.assertNotIn("AKIA", command)
+        self.assertNotIn("shh", command)
+        self.assertNotIn("--app-version", command)
+        self.assertNotIn("--domain", command)
+        self.assertNotIn("--acme-email", command, "an email means nothing without a domain")
+        self.assertIn("--aws-region eu-west-1", command)
+        self.assertIn("--key /k.pem", command)
+
+    def test_cli_command_for_local(self):
+        self.assertEqual(
+            deploy_config.cli_command("local", {"host": "http://localhost:80"}, name="a"),
+            'gispublisher "<folder with the layers>" --name a --type local --host http://localhost:80',
+        )
+        self.assertIn("--port 2222", deploy_config.cli_command("ssh", {"host": "h", "port": 2222}))
+        self.assertNotIn("--port", deploy_config.cli_command("ssh", {"host": "h", "port": 22}))
 
     def test_aws_checks_its_own_remote_path_key(self):
         self.assertIsNotNone(deploy_config.deploy_problem("aws", {"remote_path": "/"}))

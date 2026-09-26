@@ -98,6 +98,15 @@ class DeployProgressTests(unittest.TestCase):
         progress.apply({"event": "error", "step": "wait", "message": "boom", "detail": "stack"})
         self.assertEqual(progress.error["message"], "boom")
 
+    def test_a_zip_result_carries_the_file_not_a_url(self):
+        progress = dp.DeployProgress()
+        progress.apply({"event": "result", "outputDir": "/o", "file": "/tmp/app-1.0.0.zip"})
+        self.assertEqual(progress.zip_file, "/tmp/app-1.0.0.zip")
+        self.assertEqual(progress.url, "")
+        other = dp.DeployProgress()
+        other.apply({"event": "result", "url": "https://x.org", "outputDir": "/o"})
+        self.assertEqual(other.zip_file, "")
+
     def test_no_steps_means_no_fraction(self):
         self.assertIsNone(dp.DeployProgress().fraction)
 

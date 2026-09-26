@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+## [0.5.1] - 2026-09-26
+
+### Added
+- **Hetzner Cloud and DigitalOcean** as deploy targets (two more radio buttons and a page each: API token with *Test token* and an optional password-manager entry, server name, size, region, ssh key, HTTPS): the server is created on the first deploy and found again by its name. Not tried yet against the real services. *(gispublisher, code-uploader)*
+- The web app options (title, logo, colour, basemap, search, legend, downloads) have their own **Web app** tab on the left instead of sitting under the Action box.
+- **HTTPS with your own domain** (SSH and AWS deploys): the new *Domain* and *Email for the certificate* fields serve the app over HTTPS with a free Let's Encrypt certificate. The domain is checked against the server before anything is built, and the AWS security group is checked for ports 80 and 443.
+- **Generate can also save a zip** (a checkbox, off by default): the app, a README and start scripts, runnable on any machine with Docker.
+- A warning before deploying an app with editable layers to a server over plain HTTP.
+- The deploy page keeps the HTTPS settings in their own explained box, shows a live summary of what the run will do and where the app will be, and **Copy as a gispublisher command** gives the equivalent command line. *(gispublisher)*
+- `gispublisher` can be driven entirely from the command line: `--type`, `--host`, `--port`, `--user`, `--key`, `--remote-path`, `--domain`, `--acme-email`, `--internal-certificate`, `--zip`, `--zip-file`, `--aws-*` and `--set key=value`, with early checks and clear messages; a configuration file only has to say what differs from the defaults. *(gispublisher)*
+- **Label expressions and rule-based labels** reach the map: QGIS works out the text of every feature while publishing and the labels are drawn from a hidden column that lists, forms, popups and downloads leave out. *(gispublisher, mini-lps)*
+- **Live PostGIS and WFS layers** (a *Live* column in the layer list): the app's map server draws the layer straight from its source with the QGIS style, so the map follows the source and nothing is copied. Map only: no list, search, download or editing. *(gispublisher, mini-lps)*
+- The map's right-hand controls get an **edit** button and a **time slider** show/hide button. *(mini-lps)*
+
+### Changed
+- Deployments to another machine no longer publish the database, GeoServer or the API on the server's network, use their own random passwords, and no longer serve GeoServer's administration pages. *(mini-lps, gispublisher)*
+- GeoServer 2.26.2 (was 2.24.1). *(mini-lps)*
+
+### Fixed
+- Deploying over SSH from QGIS on Windows failed with "Command not found: ssh" (QGIS starts with a PATH that leaves out Windows' OpenSSH); "Test connection" had the same problem.
+- Every SSH/AWS app pointed its frontend and CORS at a fixed example host instead of the server it was deployed to. *(gispublisher)*
+- Editing from a browser behind an HTTPS front that does not report the protocol (a tunnel, a load balancer) was refused with "Invalid CORS request". *(mini-lps)*
+- The server build failed on Linux servers (`gradlew` lost its executable bit in the upload). *(mini-lps, code-uploader)*
+- A single dropped SSH connection while waiting for the stack failed a deploy that had worked. *(code-uploader)*
+- **Security:** the app's proxy could be used to make the server call its own internal services (GeoServer administration, the database port, cloud metadata addresses). It now only calls the QGIS services of the stack and public servers. *(mini-lps)*
+- The time slider's "show all dates" and hiding it left the last date filter on the map. *(mini-lps)*
+
 ## [0.5.0] - 2026-09-25
 
 ### Added

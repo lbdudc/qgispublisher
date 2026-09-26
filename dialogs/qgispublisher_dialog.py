@@ -4,42 +4,61 @@ import sys
 import time
 
 from qgis.PyQt import uic
-from qgis.PyQt.QtCore import Qt, QThread, pyqtSignal
+from qgis.PyQt.QtCore import Qt, QThread, QTimer, pyqtSignal
 from qgis.PyQt.QtGui import QCursor, QIcon, QKeySequence
 from qgis.PyQt.QtWidgets import (
     QAction,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
+    QFormLayout,
+    QFrame,
+    QGroupBox,
+    QHBoxLayout,
     QHeaderView,
     QInputDialog,
+    QLabel,
     QLineEdit,
     QListWidgetItem,
     QMenu,
     QMessageBox,
+    QPushButton,
+    QRadioButton,
+    QScrollArea,
     QSizePolicy,
     QStyle,
     QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 from qgis.core import Qgis, QgsApplication, QgsCoordinateReferenceSystem, QgsMessageLog, QgsProject, QgsMapLayer, QgsSettings, QgsWkbTypes
 
 from .chart_builder_dialog import ChartBuilderDialog
 from .history_dialog import HistoryDialog
+from .cloud_page import CloudProviderPage
 from .web_options_group import WebOptionsGroup
 from ..core.dependencies_checker import (
     find_npm,
+    find_ssh,
     compare_versions,
     gather_requirements,
     get_latest_gispublisher_version,
     should_check_for_update,
     REQUIRED_CLI_VERSION,
 )
-from ..core.deploy_config import build_deploy_config, deploy_problem
+from ..core.deploy_config import (
+    build_deploy_config,
+    deploy_problem,
+    cli_command,
+    deploy_summary,
+    plain_http_editing_warning,
+)
 from ..core.gispublisher_runner import GISPublisherRunner, cleanup_old_temp_dirs
 from ..core.publish_job import PublishJobManager
 from ..core import (
-    model_discovery, state_store, chart_builder, connection_test, credentials, layer_export, naming, project_manifest,
+    model_discovery, state_store, chart_builder, cloud_providers, connection_test, credentials, layer_export, live_layers, naming, project_manifest,
 )
 
 FORM_CLASS, _ = uic.loadUiType(
@@ -52,6 +71,7 @@ ACTION_PAGE_DEPLOY = 1
 DEPLOY_PAGE_LOCAL = 0
 DEPLOY_PAGE_SSH = 1
 DEPLOY_PAGE_AWS = 2
+# the cloud providers' pages are added in code, after the three above (see _build_cloud_pages)
 
 # layersTable column indices — matches the <column> order in gispublisher_dialog.ui.
 # Only LAYER_COL_NAME is always visible; the rest are toggled together by
@@ -67,6 +87,8 @@ LAYER_COL_CRS = 3
 LAYER_COL_GROUP = 4
 # Added in code (not in the .ui): whether the web app lets its visitors edit the layer
 LAYER_COL_EDIT = 5
+# Keep a PostGIS/WFS layer as a live source of the app's map server instead of copying its data
+LAYER_COL_LIVE = 6
 LAYER_DETAIL_COLUMNS = (LAYER_COL_TYPE, LAYER_COL_FEATURES, LAYER_COL_CRS, LAYER_COL_GROUP)
 
 # QgsSettings keys for the cached "latest known CLI version" check — the second
@@ -89,6 +111,8 @@ _RESTORE_FIELD_WIDGETS = {
         "host": self.sshHostEdit,
         "port": self.sshPortEdit,
         "remote_repo_path": self.sshRemoteRepoPathEdit,
+        "domain": self.sshDomainEdit,
+        "acme_email": self.sshEmailEdit,
     },
     "aws": lambda self: {
         "region": self.awsRegionEdit,
@@ -98,6 +122,8 @@ _RESTORE_FIELD_WIDGETS = {
         "security_group": self.awsSecurityGroupEdit,
         "key_name": self.awsKeyNameEdit,
         "remote_path": self.awsRemotePathEdit,
+        "domain": self.awsDomainEdit,
+        "acme_email": self.awsEmailEdit,
     },
 }
 
@@ -209,9 +235,20 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         super().__init__(parent)
         self.setupUi(self)
 
-        # How the generated app looks and what it offers: built in code, below the Action box
+        # How the generated app looks and what it offers: built in code, in its own tab on the left
         self.webOptionsGroup = WebOptionsGroup(self)
-        self.actionScrollLayout.insertWidget(1, self.webOptionsGroup)
+        self.webOptionsGroup.setTitle("")
+        self.webOptionsGroup.setFlat(True)
+        self.webTabScroll = QScrollArea()
+        self.webTabScroll.setObjectName("webTabScroll")
+        self.webTabScroll.setWidgetResizable(True)
+        self.webTabScroll.setFrameShape(QFrame.Shape.NoFrame)
+        web_holder = QWidget()
+        web_layout = QVBoxLayout(web_holder)
+        web_layout.addWidget(self.webOptionsGroup)
+        web_layout.addStretch(1)
+        self.webTabScroll.setWidget(web_holder)
+        self.dataTabs.addTab(self.webTabScroll, "Web app")
 
         # Owns the running Generate/Deploy, so it outlives this dialog. The plugin
         # passes its own; a standalone dialog gets a private one.
@@ -268,15 +305,32 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self.radioAWS.toggled.connect(self.update_deploy_stack)
 
         self._build_aws_credentials_ui()
+        self._build_https_groups()
+        self._build_cloud_pages()
+        self._build_deploy_summary()
+
+        # Generate can also end in a zip of the app (README and start scripts inside), to run it on
+        # any machine with Docker: off unless asked for
+        self.zipCheck = QCheckBox("Also save it as a zip (with a README and start scripts)")
+        self.zipCheck.setObjectName("zipCheck")
+        self.zipCheck.setChecked(False)
+        self.zipCheck.setToolTip(
+            "Makes the app to be started somewhere else: a zip with the app, a README and start scripts. "
+            "Whoever gets it runs it on any machine with Docker (./start.sh, or .\\start.ps1 on Windows), "
+            "with HTTPS if they give it a domain. It has its own passwords, so keep it private."
+        )
+        self.generateConfigLayout.insertWidget(self.generateConfigLayout.indexOf(self.outputFolderLabel) + 1, self.zipCheck)
 
         # "Update data only": reload the data of the app deployed from here, no rebuild
         self.updateDataCheck = QCheckBox("Update data only (faster: no rebuild, no restart)")
         self.updateDataCheck.setObjectName("updateDataCheck")
-        self.deployConfigLayout.insertWidget(1, self.updateDataCheck)
+        self.deployConfigLayout.insertWidget(2, self.updateDataCheck)
         self.appNameEdit.textChanged.connect(self._refresh_update_data_check)
         self.radioLocal.toggled.connect(self._refresh_update_data_check)
         self.radioSSH.toggled.connect(self._refresh_update_data_check)
         self.radioAWS.toggled.connect(self._refresh_update_data_check)
+        for radio in self.cloudRadios.values():
+            radio.toggled.connect(self._refresh_update_data_check)
         self.job_manager.jobFinished.connect(self._refresh_update_data_check)
         self._refresh_update_data_check()
 
@@ -389,15 +443,20 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         stretches to absorb whatever width the dialog is resized to (the thing
         that made the old QListWidget's crammed single-line text look
         unresponsive); the data columns size to their content instead."""
-        self.layersTable.setColumnCount(LAYER_COL_EDIT + 1)
+        self.layersTable.setColumnCount(LAYER_COL_LIVE + 1)
         self.layersTable.setHorizontalHeaderItem(LAYER_COL_EDIT, QTableWidgetItem("Editable"))
         self.layersTable.horizontalHeaderItem(LAYER_COL_EDIT).setToolTip(
             "Let the people who use the web app add, move and delete this layer's features on the map. "
             "They need the editing password that is shown when the deployment ends."
         )
+        self.layersTable.setHorizontalHeaderItem(LAYER_COL_LIVE, QTableWidgetItem("Live"))
+        self.layersTable.horizontalHeaderItem(LAYER_COL_LIVE).setToolTip(
+            "PostGIS and WFS layers only: do not copy the data into the app. Its map server draws the layer straight "
+            "from the source, so the map follows the source. Such a layer has no list, search, download or editing."
+        )
         header = self.layersTable.horizontalHeader()
         header.setSectionResizeMode(LAYER_COL_NAME, QHeaderView.ResizeMode.Stretch)
-        for col in (*LAYER_DETAIL_COLUMNS, LAYER_COL_EDIT):
+        for col in (*LAYER_DETAIL_COLUMNS, LAYER_COL_EDIT, LAYER_COL_LIVE):
             header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
         self.layersTable.verticalHeader().setVisible(False)
 
@@ -407,6 +466,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         had_items = self.layersTable.rowCount() > 0
         previously_checked = self._checked_layer_ids()
         previously_editable = self._editable_layer_ids()
+        previously_live = self._live_layer_ids()
 
         # itemChanged (wired to update_selection_state) would otherwise fire
         # once per cell while the table is being rebuilt below.
@@ -488,6 +548,17 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
                 edit_cell.setFlags(Qt.ItemFlag.ItemIsEnabled)
             self.layersTable.setItem(row, LAYER_COL_EDIT, edit_cell)
 
+            live_cell = QTableWidgetItem()
+            if layer.type() == QgsMapLayer.LayerType.VectorLayer and live_layers.can_be_live(layer.providerType()):
+                live_cell.setFlags((live_cell.flags() | Qt.ItemFlag.ItemIsUserCheckable) & ~Qt.ItemFlag.ItemIsEditable)
+                live_cell.setCheckState(
+                    Qt.CheckState.Checked if layer.id() in previously_live else Qt.CheckState.Unchecked
+                )
+                live_cell.setToolTip("Draw this layer from its source (no copy of the data in the app).")
+            else:
+                live_cell.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.layersTable.setItem(row, LAYER_COL_LIVE, live_cell)
+
         for offset, (layer, (kind, reason)) in enumerate(skipped):
             row = len(layers) + offset
             group = tree_info.get(layer.id(), {}).get("group")
@@ -509,6 +580,9 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             blank = QTableWidgetItem()
             blank.setFlags(Qt.ItemFlag.ItemIsEnabled)
             self.layersTable.setItem(row, LAYER_COL_EDIT, blank)
+            live_blank = QTableWidgetItem()
+            live_blank.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.layersTable.setItem(row, LAYER_COL_LIVE, live_blank)
 
         self.layersTable.blockSignals(False)
         self.update_selection_state()
@@ -660,6 +734,26 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             if cell is not None and name is not None and cell.checkState() == Qt.CheckState.Checked:
                 ids.add(name.data(Qt.ItemDataRole.UserRole))
         return ids
+
+    def _live_layer_ids(self):
+        """Ids of the layers whose Live box is checked (kept as a live PostGIS/WFS source)."""
+        ids = set()
+        for row in range(self.layersTable.rowCount()):
+            cell = self.layersTable.item(row, LAYER_COL_LIVE)
+            name = self.layersTable.item(row, LAYER_COL_NAME)
+            if cell is not None and name is not None and cell.checkState() == Qt.CheckState.Checked:
+                ids.add(name.data(Qt.ItemDataRole.UserRole))
+        return ids
+
+    def _restore_live_layers(self, layer_ids):
+        wanted = set(layer_ids or [])
+        for row in range(self.layersTable.rowCount()):
+            cell = self.layersTable.item(row, LAYER_COL_LIVE)
+            name = self.layersTable.item(row, LAYER_COL_NAME)
+            if cell is not None and name is not None and bool(cell.flags() & Qt.ItemFlag.ItemIsUserCheckable):
+                cell.setCheckState(
+                    Qt.CheckState.Checked if name.data(Qt.ItemDataRole.UserRole) in wanted else Qt.CheckState.Unchecked
+                )
 
     def _restore_editable_layers(self, layer_ids):
         wanted = set(layer_ids or [])
@@ -1198,6 +1292,10 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             self.sshPortEdit: "SSH port on the remote server (default 22).",
             self.sshCertRouteEdit: "Path to the private key (.pem) used to authenticate over SSH.",
             self.sshRemoteRepoPathEdit: "Absolute path on the remote server where the application will be deployed.",
+            self.sshDomainEdit: "Domain name that points at the server (for example gis.example.org). Leave empty to serve the app over plain HTTP at the server address. With a domain the app is served over HTTPS with a free Let's Encrypt certificate: ports 80 and 443 must be open on the server.",
+            self.sshEmailEdit: "Optional. Let's Encrypt sends certificate expiry notices to this address.",
+            self.awsDomainEdit: "Domain name that points at the server (for example gis.example.org). Leave empty to serve the app over plain HTTP at the server address. With a domain the app is served over HTTPS with a free Let's Encrypt certificate: ports 80 and 443 must be open on the server.",
+            self.awsEmailEdit: "Optional. Let's Encrypt sends certificate expiry notices to this address.",
             self.awsAccessKeyEdit: "AWS IAM access key ID with permission to launch EC2 instances.",
             self.awsSecretAccessKeyEdit: "AWS IAM secret access key matching the access key above.",  # pragma: allowlist secret
             self.awsRegionEdit: "AWS region code, e.g. eu-west-1.",
@@ -1266,6 +1364,128 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         if path:
             line_edit.setText(path)
 
+    # ------------------------------------------------------------------
+    # Deploy page: the HTTPS boxes and the "what will happen" summary
+    # ------------------------------------------------------------------
+
+    _HTTPS_HINT = (
+        "Serve the app over HTTPS at your own domain, with a free Let's Encrypt certificate that renews by itself. "
+        "The name must already point at the server and ports 80 and 443 must be open. "
+        "Leave it empty to serve plain HTTP at the server's address."
+    )
+
+    def _move_rows_to_group(self, form_layout, widgets, title, hint):
+        """A group box holding `widgets` (label and field pairs) taken out of `form_layout`."""
+        group = QGroupBox(title)
+        outer = QVBoxLayout(group)
+        note = QLabel(hint)
+        note.setWordWrap(True)
+        note.setStyleSheet("color: palette(dark);")
+        outer.addWidget(note)
+        inner = QFormLayout()
+        inner.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        for label, field in widgets:
+            form_layout.takeRow(field)
+            inner.addRow(label, field)
+        outer.addLayout(inner)
+        return group
+
+    def _build_https_groups(self):
+        """Domain and certificate email get their own box on the SSH and AWS pages instead of two
+        more plain rows at the end of the form."""
+        ssh_group = self._move_rows_to_group(
+            self.sshFormLayout,
+            [(self.sshDomainLabel, self.sshDomainEdit), (self.sshEmailLabel, self.sshEmailEdit)],
+            "HTTPS (optional)", self._HTTPS_HINT,
+        )
+        # spans both columns, above the "Test connection" button
+        self.sshFormLayout.insertRow(self.sshFormLayout.rowCount() - 1, ssh_group)
+
+        aws_group = self._move_rows_to_group(
+            self.awsSshFormLayout,
+            [(self.awsDomainLabel, self.awsDomainEdit), (self.awsEmailLabel, self.awsEmailEdit)],
+            "HTTPS (optional)",
+            self._HTTPS_HINT + " A new instance only has an address once it exists, so the certificate is issued "
+            "as soon as you point the name at it.",
+        )
+        self.awsPageLayout.insertWidget(self.awsPageLayout.indexOf(self.awsSshGroup) + 1, aws_group)
+
+    def _build_cloud_pages(self):
+        """Hetzner Cloud and DigitalOcean: a radio on a second row under Local / SSH / AWS, and a page
+        of their own in the deploy stack (built in code, from core.cloud_providers)."""
+        self.cloudPages = {}
+        self.cloudRadios = {}
+        row = QHBoxLayout()
+        for deploy_type in cloud_providers.CLOUD_TYPES:
+            radio = QRadioButton(cloud_providers.label(deploy_type), self.pageDeployConfig)
+            radio.setObjectName("radio" + {"hetzner": "Hetzner", "digitalocean": "DigitalOcean"}[deploy_type])
+            font = radio.font()
+            font.setBold(True)
+            radio.setFont(font)
+            page = CloudProviderPage(deploy_type, self._HTTPS_HINT)
+            self.deployWidget.addWidget(page)
+            radio.toggled.connect(self.update_deploy_stack)
+            page.changed.connect(self._refresh_deploy_summary)
+            row.addWidget(radio)
+            self.cloudRadios[deploy_type] = radio
+            self.cloudPages[deploy_type] = page
+            setattr(self, radio.objectName(), radio)
+        row.addStretch(1)
+        self.deployConfigLayout.insertLayout(1, row)
+
+    def _build_deploy_summary(self):
+        """A live line under the deploy form: what the run will do and where the app will be."""
+        self.deploySummaryLabel = QLabel()
+        self.deploySummaryLabel.setObjectName("deploySummaryLabel")
+        self.deploySummaryLabel.setWordWrap(True)
+        self.deploySummaryLabel.setTextFormat(Qt.TextFormat.RichText)
+        self.deploySummaryLabel.setOpenExternalLinks(False)
+        self.deploySummaryLabel.setStyleSheet(
+            "QLabel#deploySummaryLabel { background: palette(base); border: 1px solid palette(mid); "
+            "border-radius: 4px; padding: 8px; }"
+        )
+        # above the form (the stacked pages are as tall as the longest one, so below them it would
+        # sit out of sight)
+        self.deployConfigLayout.insertWidget(self.deployConfigLayout.indexOf(self.deployWidget), self.deploySummaryLabel)
+        self.copyCommandButton = QPushButton("Copy as a gispublisher command")
+        self.copyCommandButton.setToolTip(
+            "Copies the command line that does the same as this form, to run it from a terminal or a script "
+            "(the AWS keys are not included: the command reads them from the environment)."
+        )
+        self.copyCommandButton.clicked.connect(self._copy_cli_command)
+        self.deployConfigLayout.insertWidget(self.deployConfigLayout.indexOf(self.deployWidget), self.copyCommandButton)
+
+        edits = [
+            self.localHostEdit, self.sshHostEdit, self.sshUsernameEdit, self.sshRemoteRepoPathEdit,
+            self.sshDomainEdit, self.awsDomainEdit,
+        ]
+        for edit in edits:
+            edit.textChanged.connect(self._refresh_deploy_summary)
+        for combo in (self.awsRegionEdit, self.awsInstanceTypeEdit):
+            combo.currentTextChanged.connect(self._refresh_deploy_summary)
+        for radio in (self.radioDeploy, self.radioLocal, self.radioSSH, self.radioAWS, *self.cloudRadios.values()):
+            radio.toggled.connect(self._refresh_deploy_summary)
+        self.layersTable.itemChanged.connect(self._refresh_deploy_summary)
+        self._refresh_deploy_summary()
+
+    def _copy_cli_command(self):
+        deploy_type, fields = self.collect_deploy_fields()
+        name = naming.docker_safe_app_name(self.appNameEdit.text().strip() or "app")
+        command = cli_command(deploy_type, fields, name=name, version=self.appVersionEdit.text().strip() or "1.0.0")
+        QApplication.clipboard().setText(command)
+        self.copyCommandButton.setText("Copied")
+        QTimer.singleShot(1500, lambda: self.copyCommandButton.setText("Copy as a gispublisher command"))
+
+    def _refresh_deploy_summary(self, *_):
+        deploy_type, fields = self.collect_deploy_fields()
+        lines, warnings = deploy_summary(deploy_type, fields, bool(self._editable_layer_ids()))
+        html = "<br>".join(lines)
+        if warnings:
+            html += "".join(f"<br><span style='color:#b45f06;'>&#9888; {w}</span>" for w in warnings)
+        self.deploySummaryLabel.setText(html)
+        self.deploySummaryLabel.setVisible(self.radioDeploy.isChecked())
+        self.copyCommandButton.setVisible(self.radioDeploy.isChecked())
+
     def update_deploy_stack(self):
         if self.radioLocal.isChecked():
             self.deployWidget.setCurrentIndex(DEPLOY_PAGE_LOCAL)
@@ -1273,6 +1493,10 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             self.deployWidget.setCurrentIndex(DEPLOY_PAGE_SSH)
         elif self.radioAWS.isChecked():
             self.deployWidget.setCurrentIndex(DEPLOY_PAGE_AWS)
+        else:
+            for deploy_type, radio in self.cloudRadios.items():
+                if radio.isChecked():
+                    self.deployWidget.setCurrentWidget(self.cloudPages[deploy_type])
         self._shrink_stacked_widget_to_current_page(self.deployWidget)
 
     def _build_aws_credentials_ui(self):
@@ -1384,12 +1608,12 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         deployed = bool(app_name) and os.path.isfile(
             os.path.join(self._deployment_path(app_name), "output", ".gp-deploy-state.json")
         )
-        target_ok = not self.radioAWS.isChecked()
+        target_ok = not self.radioAWS.isChecked() and not any(r.isChecked() for r in self.cloudRadios.values())
         self.updateDataCheck.setEnabled(deployed and target_ok)
         if not (deployed and target_ok):
             self.updateDataCheck.setChecked(False)
         if not target_ok:
-            reason = "Not available for AWS: give the instance's address in an SSH deployment instead."
+            reason = "Not available for AWS or a cloud server: give the server's address in an SSH deployment instead."
         elif not deployed:
             reason = "Deploy the app once from here first."
         else:
@@ -1399,11 +1623,18 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             )
         self.updateDataCheck.setToolTip(reason)
 
+    def _deploy_radios(self):
+        """Deploy type -> its radio button."""
+        return {"local": self.radioLocal, "ssh": self.radioSSH, "aws": self.radioAWS, **self.cloudRadios}
+
     def current_deploy_type(self):
         if self.radioLocal.isChecked():
             return "local"
         if self.radioSSH.isChecked():
             return "ssh"
+        for deploy_type, radio in self.cloudRadios.items():
+            if radio.isChecked():
+                return deploy_type
         return "aws"
 
     @staticmethod
@@ -1442,6 +1673,10 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             ]
             missing.extend(label for widget, label in required if not self._field_text(widget).strip())
 
+        elif cloud_providers.is_cloud(deploy_type):
+            page = self.cloudPages[deploy_type]
+            missing.extend(page.missing_fields(saved_token=page.token_saved()))
+
         return missing
 
     def collect_deploy_fields(self):
@@ -1456,7 +1691,11 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
                 "username": self.sshUsernameEdit.text(),
                 "cert_route": self.sshCertRouteEdit.text(),
                 "remote_repo_path": self.sshRemoteRepoPathEdit.text(),
+                "domain": self.sshDomainEdit.text(),
+                "acme_email": self.sshEmailEdit.text(),
             }
+        elif cloud_providers.is_cloud(deploy_type):
+            fields = self.cloudPages[deploy_type].fields()
         else:
             fields = {
                 "auth_mode": self.awsAuthModeCombo.currentData(),
@@ -1472,6 +1711,8 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
                 "username": self.awsUsernameEdit.text(),
                 "ssh_key_path": self.awsSshKeyPathEdit.text(),
                 "remote_path": self.awsRemotePathEdit.text(),
+                "domain": self.awsDomainEdit.text(),
+                "acme_email": self.awsEmailEdit.text(),
             }
 
         return deploy_type, fields
@@ -1587,10 +1828,10 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
 
         deploy_type = record.get("deploy_type", "local")
         self.radioDeploy.setChecked(True)
-        {"local": self.radioLocal, "ssh": self.radioSSH, "aws": self.radioAWS}.get(
-            deploy_type, self.radioLocal
-        ).setChecked(True)
+        self._deploy_radios().get(deploy_type, self.radioLocal).setChecked(True)
 
+        if cloud_providers.is_cloud(deploy_type):
+            self.cloudPages[deploy_type].set_fields(record.get("restorable_fields", {}))
         widgets = _RESTORE_FIELD_WIDGETS.get(deploy_type, lambda self: {})(self)
         for key, widget in widgets.items():
             value = record.get("restorable_fields", {}).get(key)
@@ -1642,6 +1883,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             "deploy_type": self.current_deploy_type(),
             "web_options": self.webOptionsGroup.settings(),
             "editable_layer_ids": sorted(self._editable_layer_ids()),
+            "live_layer_ids": sorted(self._live_layer_ids()),
         }
         state_store.save_project_selection(project, selection)
 
@@ -1681,6 +1923,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self.useProjectCrsCheck.setChecked(bool(selection.get("use_project_crs")))
         self.webOptionsGroup.set_settings(selection.get("web_options"))
         self._restore_editable_layers(selection.get("editable_layer_ids"))
+        self._restore_live_layers(selection.get("live_layer_ids"))
         if selection["model_folder"] and os.path.isdir(selection["model_folder"]):
             self.selected_model_folder = selection["model_folder"]
             self.modelFolderPathLabel.setText(self.selected_model_folder)
@@ -1700,9 +1943,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         self.radioGenerate.setChecked(selection["action"] != "deploy")
 
         deploy_type = selection.get("deploy_type", "local")
-        {"local": self.radioLocal, "ssh": self.radioSSH, "aws": self.radioAWS}.get(
-            deploy_type, self.radioLocal
-        ).setChecked(True)
+        self._deploy_radios().get(deploy_type, self.radioLocal).setChecked(True)
 
     # ------------------------------------------------------------------
     # Requirements / status
@@ -1996,8 +2237,10 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
 
         if self.radioGenerate.isChecked():
             target_line = f"Action: Generate → {self.output_dir or '(no output folder selected)'}"
+            if self.zipCheck.isChecked():
+                target_line += " (and a zip of it)"
         else:
-            target_kind = "Local" if self.radioLocal.isChecked() else "SSH" if self.radioSSH.isChecked() else "AWS"
+            target_kind = self._TARGET_LABELS.get(self.current_deploy_type(), self.current_deploy_type())
             update = " — update the data only" if self.updateDataCheck.isChecked() else ""
             target_line = f"Action: Deploy ({target_kind}){update}"
 
@@ -2076,7 +2319,10 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
     # dialog or the progress window is closed.
     # ------------------------------------------------------------------
 
-    _TARGET_LABELS = {"local": "Local Docker", "ssh": "SSH server", "aws": "AWS"}
+    _TARGET_LABELS = {
+        "local": "Local Docker", "ssh": "SSH server", "aws": "AWS",
+        **{t: cloud_providers.label(t) for t in cloud_providers.CLOUD_TYPES},
+    }
 
     def _deployment_dir(self, app_name):
         """A persistent folder per app (in the QGIS profile) instead of a shared
@@ -2097,6 +2343,8 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             use_project_crs=self.useProjectCrsCheck.isChecked(),
             web_settings=self.webOptionsGroup.settings(),
             editable_layer_ids=self._editable_layer_ids(),
+            live_layer_ids=self._live_layer_ids(),
+            deploy_type=self.current_deploy_type() if self.radioDeploy.isChecked() else "generate",
             extra_env=extra_env,
             parent=self.job_manager,
             debug=self.DEBUG,
@@ -2155,7 +2403,7 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             # .start()'s generate branch).
             config_path = build_deploy_config(
                 "local", {}, name=name, version=version, dest_dir=self.output_dir,
-                gispublisher_root=self._gispublisher_root,
+                gispublisher_root=self._gispublisher_root, zip_output=self.zipCheck.isChecked(),
             )
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
@@ -2184,8 +2432,16 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
         if problem:
             QMessageBox.warning(self, "Invalid deploy settings", problem)
             return
+        selected_ids = {layer.id() for layer in selected_layers}
+        warning = plain_http_editing_warning(deploy_type, fields, bool(selected_ids & self._editable_layer_ids()))
+        if warning and QMessageBox.question(self, "Editing over HTTP", warning) != QMessageBox.StandardButton.Yes:
+            return
         if deploy_type == "aws":
             fields = self._resolve_aws_credentials(fields)
+            if fields is None:
+                return
+        elif cloud_providers.is_cloud(deploy_type):
+            fields = self.cloudPages[deploy_type].resolve_token(fields, self)
             if fields is None:
                 return
 
@@ -2208,6 +2464,15 @@ class GISPublisherDialog(QDialog, FORM_CLASS):
             QMessageBox.critical(self, "Error", str(e))
             return
 
+        if deploy_type in ("ssh", "aws", *cloud_providers.CLOUD_TYPES):
+            # the CLI runs ssh/scp itself: QGIS' own PATH may not have Windows' OpenSSH
+            if find_ssh() is None:
+                QMessageBox.warning(
+                    self, "ssh not found",
+                    "Deploying to a server needs an `ssh` client (OpenSSH), and none was found. On Windows it "
+                    "is an optional feature: Settings > System > Optional features > OpenSSH Client.",
+                )
+                return
         if deploy_type == "local" and sys.platform == "win32":
             docker_bin = r"C:\Program Files\Docker\Docker\resources\bin"
             if os.path.isdir(docker_bin):

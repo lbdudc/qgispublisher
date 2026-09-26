@@ -252,6 +252,13 @@ class NamingTests(unittest.TestCase):
         # characters rather than being stripped back down.
         self.assertFalse(naming.collides_with_dsl_keyword("point_1"))
 
+    def test_preferred_basename_of_a_database_source_is_its_table(self):
+        pg = "dbname='gis' host=h port=5432 user='u' password='p' key='id' srid=4326 type=Point table=\"public\".\"roads\" (geom) sql="
+        self.assertEqual(naming.preferred_basename_from_source("Roads layer", pg), "roads")
+        self.assertEqual(naming.preferred_basename_from_source("Query", "dbname='gis' host=h table=\"\" (geom)"), "Query")
+        self.assertEqual(naming.preferred_basename_from_source("Rivers", "typename='ns:r' url='https://x/wfs'"), "Rivers")
+        self.assertEqual(naming.preferred_basename_from_source("x", "C:/my data/roads.shp"), "roads")
+
 
 if __name__ == "__main__":
     unittest.main()

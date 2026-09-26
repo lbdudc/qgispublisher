@@ -250,7 +250,9 @@ class ProgressDialog(QDialog):
 
     def _open_folder(self):
         job = self.manager.job
-        if job is not None and job.output_dir and os.path.isdir(job.output_dir):
+        if job is not None and job.zip_file and os.path.isfile(job.zip_file):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(job.zip_file)))
+        elif job is not None and job.output_dir and os.path.isdir(job.output_dir):
             QDesktopServices.openUrl(QUrl.fromLocalFile(job.output_dir))
 
     def _tick(self):
@@ -395,7 +397,9 @@ class ProgressDialog(QDialog):
             done = {"deploy": "Deployed", "update": "Data updated"}.get(job.kind, "Generated")
             title = f"{done} successfully" if not job.warnings else f"{done} with warnings"
             parts = []
-            if job.url:
+            if job.zip_file:
+                parts.append(f"Zip saved to {job.zip_file}")
+            elif job.url:
                 parts.append(f'Available at <a href="{job.url}">{job.url}</a>')
             elif job.kind == "generate" and job.output_dir:
                 parts.append(f"Written to {job.output_dir}")
@@ -426,7 +430,10 @@ class ProgressDialog(QDialog):
         has_url = job.ok and bool(job.url)
         self.open_app_button.setVisible(has_url)
         self.copy_link_button.setVisible(has_url)
-        self.open_folder_button.setVisible(bool(job.output_dir) and os.path.isdir(job.output_dir))
+        self.open_folder_button.setVisible(
+            (bool(job.zip_file) and os.path.isfile(job.zip_file))
+            or (bool(job.output_dir) and os.path.isdir(job.output_dir))
+        )
         self.result_frame.setVisible(True)
 
         if not job.ok and not job.cancelled and not self.details_check.isChecked():

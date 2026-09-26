@@ -13,6 +13,8 @@ manager as an argument, so ``tests/test_credentials.py`` covers it with a fake.
 import configparser
 import os
 
+from . import cloud_providers
+
 AUTH_MODE_KEYS = "keys"
 AUTH_MODE_PROFILE = "profile"
 
@@ -63,6 +65,8 @@ def aws_profile_names(config_path=None, credentials_path=None):
 def deploy_environment(deploy_type, fields):
     """The environment variables the CLI needs to sign in to the deploy target: the
     access keys, or the chosen profile. ``{}`` for anything that has no credentials."""
+    if cloud_providers.is_cloud(deploy_type):
+        return cloud_providers.environment(deploy_type, fields)
     if deploy_type != "aws":
         return {}
     if fields.get("auth_mode") == AUTH_MODE_PROFILE:
@@ -101,13 +105,15 @@ class AwsKeyStore:
     ``QgsApplication.authManager()`` and ``config_class`` ``QgsAuthMethodConfig``.
     """
 
-    def __init__(self, auth_manager, settings, config_class):
+    def __init__(self, auth_manager, settings, config_class, setting=AUTHCFG_SETTING, name=_CONFIG_NAME):
         self._auth = auth_manager
         self._settings = settings
         self._config_class = config_class
+        self._setting = setting
+        self._name = name
 
     def _saved_id(self):
-        value = self._settings.value(AUTHCFG_SETTING, "")
+        value = self._settings.value(self._setting, "")
         return str(value or "")
 
     def has_saved(self):
@@ -126,7 +132,7 @@ class AwsKeyStore:
         if not self._unlock():
             return False
         config = self._config_class("Basic")
-        config.setName(_CONFIG_NAME)
+        config.setName(self._name)
         config.setConfig("username", access_key)
         config.setConfig("password", secret_key)
         existing = self._saved_id()
@@ -139,7 +145,7 @@ class AwsKeyStore:
         ok = stored[0] if isinstance(stored, tuple) else bool(stored)
         if not ok:
             return False
-        self._settings.setValue(AUTHCFG_SETTING, config.id())
+        self._settings.setValue(self._setting, config.id())
         return True
 
     def load(self):
@@ -160,7 +166,7 @@ class AwsKeyStore:
         config_id = self._saved_id()
         if config_id and self._unlock():
             self._auth.removeAuthenticationConfig(config_id)
-        self._settings.remove(AUTHCFG_SETTING)
+        self._settings.remove(self._setting)
 
 
 def default_key_store():
@@ -168,3 +174,15 @@ def default_key_store():
     from qgis.core import QgsApplication, QgsAuthMethodConfig, QgsSettings
 
     return AwsKeyStore(QgsApplication.authManager(), QgsSettings(), QgsAuthMethodConfig)
+
+
+def default_token_store(deploy_type):
+    """The store of a cloud provider's API token: the same password-manager entry kind as the AWS
+    keys (user name ``token``, password = the token), one per provider."""
+    from qgis.core import QgsApplication, QgsAuthMethodConfig, QgsSettings
+
+    return AwsKeyStore(
+        QgsApplication.authManager(), QgsSettings(), QgsAuthMethodConfig,
+        setting=f"GISPublisher/{deploy_type}AuthCfg",
+        name=f"GISPublisher {cloud_providers.label(deploy_type)} API token",
+    )

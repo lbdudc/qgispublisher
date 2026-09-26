@@ -18,7 +18,7 @@ SCOPE = "GISPublisher"
 # host-identifying secret (AWS access/secret keys, SSH username, SSH key paths).
 _RESTORABLE_DEPLOY_FIELDS = {
     "local": ["host"],
-    "ssh": ["host", "port", "remote_repo_path"],
+    "ssh": ["host", "port", "remote_repo_path", "domain", "acme_email"],
     "aws": [
         "region",
         "ami_id",
@@ -27,8 +27,17 @@ _RESTORABLE_DEPLOY_FIELDS = {
         "security_group",
         "key_name",
         "remote_path",
+        "domain",
+        "acme_email",
     ],
 }
+
+_RESTORABLE_DEPLOY_FIELDS.update(
+    {
+        provider: ["server_name", "size", "region", "remote_path", "domain", "acme_email"]
+        for provider in ("hetzner", "digitalocean")
+    }
+)
 
 HISTORY_MAX_ENTRIES = 20
 HISTORY_LOG_LINES = 50
@@ -69,6 +78,7 @@ def save_project_selection(project, selection):
     project.writeEntry(SCOPE, "deploy_type", selection.get("deploy_type") or "local")
     project.writeEntry(SCOPE, "web_options", json.dumps(selection.get("web_options") or {}))
     project.writeEntry(SCOPE, "editable_layers", list(selection.get("editable_layer_ids") or []))
+    project.writeEntry(SCOPE, "live_layers", list(selection.get("live_layer_ids") or []))
 
 
 def _load_web_options(project):
@@ -116,6 +126,7 @@ def load_project_selection(project):
         "deploy_type": deploy_type,
         "web_options": _load_web_options(project),
         "editable_layer_ids": list(project.readListEntry(SCOPE, "editable_layers", [])[0]),
+        "live_layer_ids": list(project.readListEntry(SCOPE, "live_layers", [])[0]),
     }
 
 

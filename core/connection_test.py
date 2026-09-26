@@ -15,6 +15,8 @@ import socket
 import subprocess
 import sys
 
+from .dependencies_checker import find_ssh
+
 _TCP_TIMEOUT_SECONDS = 6
 _SSH_TIMEOUT_SECONDS = 12
 _AWS_TIMEOUT_SECONDS = 15
@@ -44,7 +46,7 @@ def test_ssh_connection(host, port, username, cert_path):
     except (OSError, ValueError) as e:
         return False, f"Could not reach {host}:{port} — {e}"
 
-    ssh_bin = shutil.which("ssh")
+    ssh_bin = find_ssh()
     if not ssh_bin:
         return True, (
             f"{host}:{port} is reachable, but no local `ssh` client was found on PATH "

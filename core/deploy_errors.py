@@ -181,6 +181,33 @@ def _compose_missing(match, text):
     )
 
 
+@_rule(r"(Hetzner Cloud|DigitalOcean) refused the API token")
+def _cloud_token_refused(match, text):
+    return Explanation(
+        f"{match.group(1)} did not accept the token",
+        "Check that the API token is the one of the right project, that it has Read & Write access and that "
+        "it was not deleted. The Test token button checks it without deploying.",
+    )
+
+
+@_rule(r"public ssh key .* was not found")
+def _cloud_public_key_missing(match, text):
+    return Explanation(
+        "The public half of the ssh key is missing",
+        "The provider needs the .pub file that goes with the private key (same folder, same name plus .pub). "
+        "Create the pair with ssh-keygen, or choose another key.",
+    )
+
+
+@_rule(r"(Hetzner Cloud|DigitalOcean) (GET|POST) \S+ failed \((\d+)\): (.+)")
+def _cloud_api_error(match, text):
+    return Explanation(
+        f"{match.group(1)} refused the request",
+        f"{match.group(4).strip()} (HTTP {match.group(3)}). Usually the size, the region or the image name "
+        "is not one that provider has (they can be typed over in the Server box), or the account is at its limit.",
+    )
+
+
 def explain(*texts):
     """An Explanation for the failure described by `texts` (the CLI's error
     message, the tail of its output...), or None when nothing matches."""
