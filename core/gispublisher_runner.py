@@ -57,8 +57,8 @@ def _auth_credentials(source):
         if QgsApplication.authManager().loadAuthenticationConfig(authcfg, config, True):
             values = config.configMap()
             return values.get("username", ""), values.get("password", "")
-    except Exception:
-        pass
+    except Exception:  # the password manager may be locked or the entry gone: no credentials then
+        return None
     return None
 
 

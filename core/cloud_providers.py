@@ -13,8 +13,8 @@ import urllib.request
 PROVIDERS = {
     "hetzner": {
         "label": "Hetzner Cloud",
-        "token_env": "HCLOUD_TOKEN",
-        "token_help": "Hetzner Cloud console > your project > Security > API tokens (Read & Write).",
+        "env_var": "HCLOUD_TOKEN",
+        "where_to_get_it": "Hetzner Cloud console > your project > Security > API tokens (Read & Write).",
         "sizes": [
             ("cx22", "cx22 (2 vCPU, 4 GB)"),
             ("cx32", "cx32 (4 vCPU, 8 GB)"),
@@ -32,8 +32,8 @@ PROVIDERS = {
     },
     "digitalocean": {
         "label": "DigitalOcean",
-        "token_env": "DIGITALOCEAN_TOKEN",
-        "token_help": "DigitalOcean control panel > API > Tokens > Generate New Token (Read and Write).",
+        "env_var": "DIGITALOCEAN_TOKEN",
+        "where_to_get_it": "DigitalOcean control panel > API > Tokens > Generate New Token (Read and Write).",
         "sizes": [
             ("s-2vcpu-4gb", "s-2vcpu-4gb (2 vCPU, 4 GB)"),
             ("s-4vcpu-8gb", "s-4vcpu-8gb (4 vCPU, 8 GB)"),
@@ -68,7 +68,7 @@ def label(deploy_type):
 
 
 def token_env(deploy_type):
-    return PROVIDERS[deploy_type]["token_env"]
+    return PROVIDERS[deploy_type]["env_var"]
 
 
 def environment(deploy_type, fields):

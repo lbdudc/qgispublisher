@@ -65,7 +65,7 @@ class CloudProviderPage(QWidget):
         self.tokenEdit = QLineEdit()
         self.tokenEdit.setObjectName(f"{deploy_type}TokenEdit")
         self.tokenEdit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.tokenEdit.setToolTip(f"An API token with write access. Get it at: {meta['token_help']}")
+        self.tokenEdit.setToolTip(f"An API token with write access. Get it at: {meta['where_to_get_it']}")
         self.rememberCheck = QCheckBox("Remember the token in the QGIS password manager")
         self.rememberCheck.setObjectName(f"{deploy_type}RememberCheck")
         self.rememberCheck.setToolTip(
@@ -81,7 +81,7 @@ class CloudProviderPage(QWidget):
         account_form.addRow("", self.rememberCheck)
         account_form.addRow("", self.testButton)
         account_layout = QVBoxLayout(account)
-        account_layout.addWidget(_note(f"Where to get it: {meta['token_help']}"))
+        account_layout.addWidget(_note(f"Where to get it: {meta['where_to_get_it']}"))
         account_layout.addLayout(account_form)
 
         self.serverNameEdit = QLineEdit("gispublisher-app")

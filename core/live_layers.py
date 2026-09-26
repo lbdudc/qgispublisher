@@ -12,7 +12,7 @@ import re
 PROVIDER_POSTGRES = "postgres"
 PROVIDER_WFS = "WFS"
 
-_LOOPBACK = {"localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0", ""}
+_LOOPBACK = {"localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0", ""}  # nosec B104 - hosts to recognise, not to bind
 
 # key=value where the value is 'quoted' (with \' inside), "quoted", or bare
 _PAIR_RE = re.compile(r"""([A-Za-z_]+)=('(?:\\.|[^'\\])*'|"(?:[^"]|"")*"|\S+)""")

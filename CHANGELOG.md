@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-09-26
+
+### Fixed
+- Security scanner (Bandit) findings: provider settings no longer use key names that look like passwords, the saved-credentials lookup no longer swallows errors with a bare `pass`, and the list of local host names is marked as not a bind address. No change in behaviour.
+
 ## [0.5.1] - 2026-09-26
 
 ### Added
